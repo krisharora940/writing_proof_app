@@ -1,20 +1,20 @@
 :root {
   color-scheme: light;
-  --bg: #f4f6f8;
-  --panel: #ffffff;
-  --surface: #f8fafc;
-  --surface-strong: #eef2f7;
-  --text: #172033;
-  --muted: #667085;
-  --line: #d7dee8;
-  --accent: #285f74;
-  --accent-strong: #1d4757;
-  --accent-soft: #d8edf2;
-  --success: #28735c;
-  --warning-bg: #fff1e8;
-  --warning-line: #e6a37c;
-  --warning-text: #8a3f1f;
-  --shadow: 0 18px 60px rgba(23, 32, 51, 0.12);
+  --bg: #f3eee5;
+  --panel: #fffaf2;
+  --surface: #f7efe3;
+  --surface-strong: #eadbc7;
+  --text: #2d241b;
+  --muted: #746657;
+  --line: #d9c7ad;
+  --accent: #7a4e2d;
+  --accent-strong: #56351f;
+  --accent-soft: #ead2b6;
+  --success: #4f765d;
+  --warning-bg: #fff0df;
+  --warning-line: #d89b63;
+  --warning-text: #7a3f1c;
+  --shadow: 0 18px 60px rgba(63, 43, 25, 0.14);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -29,7 +29,7 @@ html {
 body {
   margin: 0;
   background:
-    linear-gradient(180deg, rgba(216, 237, 242, 0.65), rgba(244, 246, 248, 0) 280px),
+    linear-gradient(180deg, rgba(234, 210, 182, 0.7), rgba(243, 238, 229, 0) 280px),
     var(--bg);
   color: var(--text);
 }
@@ -57,7 +57,7 @@ button {
 
 button:hover {
   border-color: var(--accent);
-  box-shadow: 0 8px 22px rgba(23, 32, 51, 0.1);
+  box-shadow: 0 8px 22px rgba(63, 43, 25, 0.12);
   transform: translateY(-1px);
 }
 
@@ -202,8 +202,8 @@ main {
 }
 
 .status-pill {
-  background: #e6f6ef;
-  border: 1px solid #b8dfcf;
+  background: #edf4e8;
+  border: 1px solid #c8d9bd;
   border-radius: 999px;
   color: var(--success);
   font-size: 12px;
@@ -293,7 +293,7 @@ textarea {
 textarea:focus,
 select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(40, 95, 116, 0.14);
+  box-shadow: 0 0 0 4px rgba(122, 78, 45, 0.16);
 }
 
 textarea::placeholder {
@@ -306,7 +306,7 @@ textarea::placeholder {
 
 .modal-backdrop {
   align-items: center;
-  background: rgba(23, 32, 51, 0.56);
+  background: rgba(45, 36, 27, 0.56);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -380,10 +380,10 @@ textarea::placeholder {
 }
 
 .replay-output {
-  background: #101828;
-  border: 1px solid #1d2939;
+  background: #241a13;
+  border: 1px solid #3b2a1d;
   border-radius: 8px;
-  color: #eef2f7;
+  color: #fff6e8;
   font: 15px/1.62 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   margin-top: 14px;
   min-height: 420px;
