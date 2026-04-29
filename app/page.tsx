@@ -1,9 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   activeWritingMs,
-  analyzeComprehension,
   analyzeProcess,
   countWords,
   formatDuration,
@@ -12,50 +11,182 @@ import {
   type Snapshot,
   type WritingEvent
 } from "@/lib/writing-events";
-
-type ActiveTab = "student" | "professor";
+import {
+  createDefaultWorkspace,
+  loadWorkspace,
+  saveWorkspace,
+  type Assignment,
+  type AuthUser
+} from "@/lib/persistence";
+import type { ReplayFrame } from "@/lib/replay";
+import { comparisonToObservations, type SummaryComparison } from "@/lib/summary-comparison";
+import type {
+  AppendWritingEventRequest,
+  LockSubmissionRequest,
+  TimedSummaryRequest
+} from "@/lib/server-boundaries";
+import { DEMO_SESSION_ID } from "@/lib/demo-ids";
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("student");
-  const [paperText, setPaperText] = useState("");
-  const [events, setEvents] = useState<WritingEvent[]>([]);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([{ at: Date.now(), text: "" }]);
-  const [submittedText, setSubmittedText] = useState("");
-  const [summaryText, setSummaryText] = useState("");
+  const defaultWorkspace = useMemo(() => createDefaultWorkspace(), []);
+  const [users, setUsers] = useState<AuthUser[]>(defaultWorkspace.users);
+  const [currentUserId, setCurrentUserId] = useState(defaultWorkspace.currentUserId);
+  const [assignment, setAssignment] = useState<Assignment>(defaultWorkspace.assignment);
+  const [paperText, setPaperText] = useState(defaultWorkspace.submission.paperText);
+  const [events, setEvents] = useState<WritingEvent[]>(defaultWorkspace.submission.events);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>(defaultWorkspace.submission.snapshots);
+  const [submittedText, setSubmittedText] = useState(defaultWorkspace.submission.submittedText);
+  const [summaryText, setSummaryText] = useState(defaultWorkspace.submission.summaryText);
+  const [submittedAt, setSubmittedAt] = useState<number | null>(defaultWorkspace.submission.submittedAt);
+  const [summaryCompletedAt, setSummaryCompletedAt] = useState<number | null>(defaultWorkspace.submission.summaryCompletedAt);
+  const [persistenceReady, setPersistenceReady] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState("");
   const [remainingSeconds, setRemainingSeconds] = useState(120);
+  const [replayFrames, setReplayFrames] = useState<ReplayFrame[]>([]);
+  const [comparison, setComparison] = useState<SummaryComparison | null>(null);
+  const [serverSyncError, setServerSyncError] = useState("");
   const [replayIndex, setReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const summaryStartedAtRef = useRef<number | null>(null);
 
   const lastTextRef = useRef("");
   const lastInputAtRef = useRef<number | null>(null);
   const pendingInputTypeRef = useRef("unknown");
   const pendingPasteRef = useRef<{ words: number } | null>(null);
+  const summaryDraftRef = useRef("");
   const summaryTimerRef = useRef<number | null>(null);
   const replayTimerRef = useRef<number | null>(null);
+  const mutationQueueRef = useRef(Promise.resolve(true));
 
-  const submitted = submittedText.length > 0;
+  useEffect(() => {
+    const workspace = loadWorkspace(window.localStorage);
+    setUsers(workspace.users);
+    setCurrentUserId(workspace.currentUserId);
+    setAssignment(workspace.assignment);
+    setPaperText(workspace.submission.paperText);
+    setEvents(workspace.submission.events);
+    setSnapshots(workspace.submission.snapshots);
+    setSubmittedText(workspace.submission.submittedText);
+    setSummaryText(workspace.submission.summaryText);
+    setSubmittedAt(workspace.submission.submittedAt);
+    setSummaryCompletedAt(workspace.submission.summaryCompletedAt);
+    lastTextRef.current = workspace.submission.paperText;
+    setPersistenceReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!persistenceReady) return;
+
+    saveWorkspace(window.localStorage, {
+      users,
+      currentUserId,
+      assignment,
+      submission: {
+        ...defaultWorkspace.submission,
+        assignmentId: assignment.id,
+        paperText,
+        events,
+        snapshots,
+        submittedText,
+        summaryText,
+        submittedAt,
+        summaryCompletedAt,
+        updatedAt: Date.now()
+      }
+    });
+  }, [
+    assignment,
+    currentUserId,
+    defaultWorkspace.submission,
+    events,
+    paperText,
+    persistenceReady,
+    snapshots,
+    submittedAt,
+    submittedText,
+    summaryCompletedAt,
+    summaryText,
+    users
+  ]);
+
+  useEffect(() => {
+    if (!persistenceReady) return;
+
+    const controller = new AbortController();
+    fetch("/api/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshots, events }),
+      signal: controller.signal
+    })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Replay reconstruction failed")))
+      .then((data: { frames: ReplayFrame[] }) => {
+        setReplayFrames(data.frames);
+        setReplayIndex((current) => Math.min(current, Math.max(0, data.frames.length - 1)));
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") setReplayFrames([]);
+      });
+
+    return () => controller.abort();
+  }, [events, persistenceReady, snapshots]);
+
+  useEffect(() => {
+    if (!persistenceReady || !submittedText || !summaryText) {
+      setComparison(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    fetch("/api/summary-comparison", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ submittedText, summaryText }),
+      signal: controller.signal
+    })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Summary comparison failed")))
+      .then((data: SummaryComparison) => setComparison(data))
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") setComparison(null);
+      });
+
+    return () => controller.abort();
+  }, [persistenceReady, submittedText, summaryText]);
+
+  useEffect(() => {
+    return () => {
+      if (summaryTimerRef.current) window.clearInterval(summaryTimerRef.current);
+      if (replayTimerRef.current) window.clearInterval(replayTimerRef.current);
+    };
+  }, []);
+
+  const currentUser = users.find((user) => user.id === currentUserId) || users[0];
+  const activeRole = currentUser.role;
+  const submitted = submittedAt !== null;
   const observations = useMemo(() => {
     if (!submittedText) return [];
     const items: Observation[] = analyzeProcess(events, submittedText);
-    if (summaryText) items.push(analyzeComprehension(submittedText, summaryText));
+    if (comparison) items.push(...comparisonToObservations(comparison));
     return items;
-  }, [events, submittedText, summaryText]);
+  }, [comparison, events, submittedText]);
 
   const pasteCount = events.filter((event) => event.type === "paste").length;
   const deletionCount = events.filter((event) => event.deletionEvent).length;
-  const replaySnapshot = snapshots[replayIndex] || snapshots[0];
-  const replayEvent = events[replayIndex - 1];
+  const replayFrame = replayFrames[replayIndex];
 
   function recordEvent(event: Omit<WritingEvent, "id">) {
+    const localEvent = {
+      id: crypto.randomUUID(),
+      ...event
+    };
+
     setEvents((current) => [
       ...current,
-      {
-        id: crypto.randomUUID(),
-        ...event
-      }
+      localEvent
     ]);
+
+    return localEvent;
   }
 
   function handlePaperChange(nextText: string) {
@@ -65,7 +196,7 @@ export default function Home() {
     const pasted = pendingPasteRef.current;
     const eventType = pasted ? "paste" : diff.added ? "insert" : "delete";
 
-    recordEvent({
+    const event = recordEvent({
       type: eventType,
       at: now,
       inputType: pendingInputTypeRef.current,
@@ -79,6 +210,7 @@ export default function Home() {
       pasteWords: pasted ? pasted.words : 0,
       deletionEvent: !pasted && diff.removed.length > 2
     });
+    void persistWritingEvent(event);
 
     pendingPasteRef.current = null;
     pendingInputTypeRef.current = "unknown";
@@ -88,15 +220,23 @@ export default function Home() {
     setSnapshots((current) => [...current, { at: now, text: nextText }]);
   }
 
-  function submitPaper() {
+  async function submitPaper() {
     const now = Date.now();
-    setSubmittedText(paperText);
-    recordEvent({
+    const submitEvent = recordEvent({
       type: "submit",
       at: now,
       words: countWords(paperText)
     });
-    setSnapshots((current) => [...current, { at: now, text: paperText }]);
+    const snapshot = { at: now, text: paperText };
+    await persistWritingEvent(submitEvent);
+    const locked = await lockSubmittedPaper(paperText, snapshot);
+    if (!locked) return;
+
+    setSubmittedText(paperText);
+    setSubmittedAt(now);
+    setSnapshots((current) => [...current, snapshot]);
+    summaryDraftRef.current = "";
+    summaryStartedAtRef.current = now;
     setSummaryDraft("");
     setRemainingSeconds(120);
     setSummaryOpen(true);
@@ -119,9 +259,18 @@ export default function Home() {
   function completeSummary() {
     if (summaryTimerRef.current) window.clearInterval(summaryTimerRef.current);
     summaryTimerRef.current = null;
-    setSummaryText(summaryDraft);
+    const completedAt = Date.now();
+    void storeSummary(summaryDraftRef.current, summaryStartedAtRef.current || completedAt, completedAt);
+    setSummaryText(summaryDraftRef.current);
+    setSummaryCompletedAt(completedAt);
     setSummaryOpen(false);
-    setActiveTab("professor");
+  }
+
+  function switchUser(nextUserId: string) {
+    const nextUser = users.find((user) => user.id === nextUserId);
+    if (!nextUser) return;
+
+    setCurrentUserId(nextUser.id);
   }
 
   function playReplay() {
@@ -137,7 +286,7 @@ export default function Home() {
     replayTimerRef.current = window.setInterval(() => {
       setReplayIndex((current) => {
         const next = current + 1;
-        if (next > snapshots.length - 1) {
+        if (next > replayFrames.length - 1) {
           if (replayTimerRef.current) window.clearInterval(replayTimerRef.current);
           replayTimerRef.current = null;
           setIsPlaying(false);
@@ -148,30 +297,91 @@ export default function Home() {
     }, 240);
   }
 
+  function persistWritingEvent(event: WritingEvent) {
+    const { id: _id, ...eventPayload } = event;
+    const request: AppendWritingEventRequest = {
+      sessionId: DEMO_SESSION_ID,
+      studentId: currentUser.id,
+      event: eventPayload
+    };
+
+    return enqueueMutation("/api/writing-events", request);
+  }
+
+  function lockSubmittedPaper(submittedTextForLock: string, snapshot: Snapshot) {
+    const request: LockSubmissionRequest = {
+      sessionId: DEMO_SESSION_ID,
+      studentId: currentUser.id,
+      submittedText: submittedTextForLock,
+      snapshot
+    };
+
+    return enqueueMutation("/api/submissions/lock", request);
+  }
+
+  function storeSummary(summaryTextForStorage: string, startedAt: number, completedAt: number) {
+    const request: TimedSummaryRequest = {
+      sessionId: DEMO_SESSION_ID,
+      studentId: currentUser.id,
+      startedAt,
+      completedAt,
+      summaryText: summaryTextForStorage
+    };
+
+    return enqueueMutation("/api/timed-summaries", request);
+  }
+
+  function enqueueMutation(path: string, body: unknown) {
+    const nextMutation = mutationQueueRef.current.then(() => postMutation(path, body));
+    mutationQueueRef.current = nextMutation.catch(() => false);
+    return nextMutation;
+  }
+
+  async function postMutation(path: string, body: unknown) {
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({ error: "Server mutation failed." }));
+        throw new Error(typeof data.error === "string" ? data.error : "Server mutation failed.");
+      }
+
+      setServerSyncError("");
+      return true;
+    } catch (error) {
+      setServerSyncError(error instanceof Error ? error.message : "Server mutation failed.");
+      return false;
+    }
+  }
+
   return (
     <>
       <header className="topbar">
-        <div>
+        <div className="brand-block">
           <p className="eyebrow">Verified Writing MVP</p>
           <h1>Process capture, rewind, and comprehension check</h1>
         </div>
-        <nav className="tabs" aria-label="Workspace tabs">
-          <button className={`tab ${activeTab === "student" ? "active" : ""}`} onClick={() => setActiveTab("student")}>
-            Student
-          </button>
-          <button className={`tab ${activeTab === "professor" ? "active" : ""}`} onClick={() => setActiveTab("professor")}>
-            Professor
-          </button>
-        </nav>
+        <div className="account-bar">
+          <label htmlFor="user-switcher">Signed in as</label>
+          <select id="user-switcher" value={currentUser.id} onChange={(event) => switchUser(event.target.value)}>
+            {users.map((user) => (
+              <option key={user.id} value={user.id}>{user.name}</option>
+            ))}
+          </select>
+        </div>
       </header>
 
       <main>
-        {activeTab === "student" ? (
+        {activeRole === "student" ? (
           <section className="view active">
             <section className="assignment">
               <div>
                 <p className="eyebrow">Assignment</p>
-                <h2>Write a short paper on whether process evidence is fairer than final-text AI detection.</h2>
+                <h2>{assignment.prompt}</h2>
               </div>
               <button className="primary" disabled={submitted} onClick={submitPaper}>
                 Submit Paper
@@ -180,18 +390,28 @@ export default function Home() {
 
             <section className="workspace">
               <aside className="panel">
-                <h3>Live Capture</h3>
+                <div className="panel-header compact">
+                  <div>
+                    <p className="eyebrow">Session</p>
+                    <h3>Live Capture</h3>
+                  </div>
+                  <span className="status-pill">{submitted ? "Locked" : "Recording"}</span>
+                </div>
                 <dl className="metrics">
                   <div><dt>Words</dt><dd>{countWords(paperText)}</dd></div>
                   <div><dt>Active Time</dt><dd>{formatDuration(activeWritingMs(events))}</dd></div>
                   <div><dt>Paste Events</dt><dd>{pasteCount}</dd></div>
                   <div><dt>Deletion Events</dt><dd>{deletionCount}</dd></div>
                 </dl>
+                {serverSyncError ? <p className="sync-error">{serverSyncError}</p> : null}
                 <p className="note">The editor records factual writing events for review after submission.</p>
               </aside>
 
               <section className="editor-shell">
-                <label htmlFor="paper-editor">Paper</label>
+                <div className="editor-heading">
+                  <label htmlFor="paper-editor">Paper</label>
+                  <span>{submitted ? "Submitted" : "Draft"}</span>
+                </div>
                 <textarea
                   id="paper-editor"
                   spellCheck
@@ -242,19 +462,18 @@ export default function Home() {
                     <p className="eyebrow">Rewind</p>
                     <h2>Timeline Replay</h2>
                   </div>
-                  <button onClick={playReplay}>{isPlaying ? "Pause" : "Play"}</button>
+                  <button className="ghost" onClick={playReplay}>{isPlaying ? "Pause" : "Play"}</button>
                 </div>
                 <input
                   id="replay-slider"
                   type="range"
                   min="0"
-                  max={Math.max(0, snapshots.length - 1)}
+                  max={Math.max(0, replayFrames.length - 1)}
                   value={replayIndex}
                   onChange={(event) => setReplayIndex(Number(event.target.value))}
                 />
                 <div className="replay-output">
-                  {replayEvent ? `[${new Date(replayEvent.at).toLocaleTimeString()}] ${replayEvent.type.toUpperCase()}${replayEvent.addedWords ? `, ${replayEvent.addedWords} words added` : ""}\n\n` : ""}
-                  {replaySnapshot?.text || ""}
+                  {replayFrame ? `[${new Date(replayFrame.at).toLocaleTimeString()}] ${replayFrame.label}\n\n${replayFrame.text}` : ""}
                 </div>
               </section>
             </section>
@@ -276,7 +495,10 @@ export default function Home() {
               id="summary-editor"
               placeholder="Main argument, key claims, evidence, and limitation..."
               value={summaryDraft}
-              onChange={(event) => setSummaryDraft(event.target.value)}
+              onChange={(event) => {
+                summaryDraftRef.current = event.target.value;
+                setSummaryDraft(event.target.value);
+              }}
             />
             <button className="primary" onClick={completeSummary}>Complete Summary</button>
           </section>
