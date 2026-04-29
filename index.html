@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Verified Writing MVP</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Verified Writing MVP</p>
+        <h1>Process capture, rewind, and comprehension check</h1>
+      </div>
+      <nav class="tabs" aria-label="Workspace tabs">
+        <button class="tab active" data-tab="student">Student</button>
+        <button class="tab" data-tab="professor">Professor</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="student" class="view active">
+        <section class="assignment">
+          <div>
+            <p class="eyebrow">Assignment</p>
+            <h2>Write a short paper on whether process evidence is fairer than final-text AI detection.</h2>
+          </div>
+          <button id="submit-paper" class="primary">Submit Paper</button>
+        </section>
+
+        <section class="workspace">
+          <aside class="panel">
+            <h3>Live Capture</h3>
+            <dl class="metrics">
+              <div><dt>Words</dt><dd id="word-count">0</dd></div>
+              <div><dt>Active Time</dt><dd id="active-time">0s</dd></div>
+              <div><dt>Paste Events</dt><dd id="paste-count">0</dd></div>
+              <div><dt>Deletion Events</dt><dd id="deletion-count">0</dd></div>
+            </dl>
+            <p class="note">The editor records factual writing events for review after submission.</p>
+          </aside>
+
+          <section class="editor-shell">
+            <label for="paper-editor">Paper</label>
+            <textarea id="paper-editor" spellcheck="true" placeholder="Start writing here..."></textarea>
+          </section>
+        </section>
+
+        <dialog id="summary-dialog">
+          <form method="dialog" class="dialog-card">
+            <div>
+              <p class="eyebrow">Timed Summary</p>
+              <h2>Summarize your submitted paper</h2>
+              <p class="note">You have <span id="timer">02:00</span>. Use bullet points or short paragraphs. The paper is locked during this step.</p>
+            </div>
+            <textarea id="summary-editor" placeholder="Main argument, key claims, evidence, and limitation..."></textarea>
+            <button id="finish-summary" class="primary" value="complete">Complete Summary</button>
+          </form>
+        </dialog>
+      </section>
+
+      <section id="professor" class="view">
+        <section class="report-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Professor Review</p>
+                <h2>Neutral Evidence Report</h2>
+              </div>
+              <button id="analyze" class="primary">Analyze Submission</button>
+            </div>
+            <div id="report" class="report-empty">Submit a paper and timed summary to generate a report.</div>
+          </section>
+
+          <section class="panel replay-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Rewind</p>
+                <h2>Timeline Replay</h2>
+              </div>
+              <button id="play-replay">Play</button>
+            </div>
+            <input id="replay-slider" type="range" min="0" max="0" value="0">
+            <div id="replay-output" class="replay-output"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
