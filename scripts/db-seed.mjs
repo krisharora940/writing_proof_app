@@ -50,15 +50,37 @@ try {
     [ids.assignment, ids.student]
   );
   await pool.query(
+    `insert into assignment_instructors (assignment_id, professor_id, role)
+     values ($1, $2, 'owner')
+     on conflict (assignment_id, professor_id) do nothing`,
+    [ids.assignment, ids.professor]
+  );
+  await pool.query(
+    `insert into auth_identities (user_id, provider, provider_subject, email)
+     values
+       ($1, 'demo', 'demo-student', 'student@example.test'),
+       ($2, 'demo', 'demo-professor', 'professor@example.test')
+     on conflict (provider, provider_subject) do update
+     set user_id = excluded.user_id,
+         email = excluded.email`,
+    [ids.student, ids.professor]
+  );
+  await pool.query(
     `insert into writing_sessions (id, assignment_id, student_id)
      values ($1, $2, $3)
-     on conflict (assignment_id, student_id) do nothing`,
+     on conflict (id) do nothing`,
     [ids.session, ids.assignment, ids.student]
   );
   await pool.query(
     `insert into submission_snapshots (session_id, snapshot_index, captured_at, text, text_sha256)
      values ($1, 0, now(), '', $2)
      on conflict (session_id, snapshot_index) do nothing`,
+    [ids.session, sha256("")]
+  );
+  await pool.query(
+    `insert into writing_session_state (session_id, current_text, current_text_sha256, last_event_index)
+     values ($1, '', $2, -1)
+     on conflict (session_id) do nothing`,
     [ids.session, sha256("")]
   );
   await pool.query("commit");

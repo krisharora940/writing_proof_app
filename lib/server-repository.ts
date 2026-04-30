@@ -1,8 +1,13 @@
 import type {
   AppendWritingEventRequest,
+  ProfessorReportResponse,
   LockSubmissionRequest,
   TimedSummaryRequest
 } from "./server-boundaries";
+import { DEMO_PROFESSOR_ID } from "./demo-ids.ts";
+import { reconstructReplay } from "./replay.ts";
+import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
+import { analyzeProcess } from "./writing-events.ts";
 import type { Snapshot, WritingEvent } from "./writing-events";
 
 const DEMO_STUDENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -134,6 +139,32 @@ export function storeTimedSummary(
 
   state.timedSummary = timedSummary;
   return { ok: true, value: timedSummary };
+}
+
+export function getProfessorReportDemo(
+  state: DemoRepositoryState,
+  sessionId: string,
+  professorId: string
+): MutationResult<ProfessorReportResponse> {
+  if (state.session.id !== sessionId) return { ok: false, status: 404, error: "Report not found." };
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot access this report." };
+  }
+
+  const observations = state.submittedText ? analyzeProcess(state.events, state.submittedText) : [];
+  if (state.submittedText && state.timedSummary?.summaryText) {
+    observations.push(...comparisonToObservations(compareSummaryToPaper(state.submittedText, state.timedSummary.summaryText)));
+  }
+
+  return {
+    ok: true,
+    value: {
+      observations,
+      frames: reconstructReplay(state.snapshots, state.events),
+      submittedText: state.submittedText,
+      summaryText: state.timedSummary?.summaryText || ""
+    }
+  };
 }
 
 function requireStudentSession(

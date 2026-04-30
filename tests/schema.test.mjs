@@ -7,9 +7,12 @@ const schema = readFileSync(new URL("../db/schema.sql", import.meta.url), "utf8"
 test("Postgres schema includes core production tables", () => {
   [
     "app_users",
+    "auth_identities",
     "assignments",
+    "assignment_instructors",
     "assignment_students",
     "writing_sessions",
+    "writing_session_state",
     "writing_events",
     "submission_snapshots",
     "timed_summaries",
@@ -39,7 +42,35 @@ test("schema preserves append order and server-side submission lock fields", () 
   assert.match(schema, /unique \(session_id, event_index\)/);
   assert.match(schema, /submitted_at timestamptz/);
   assert.match(schema, /locked_at timestamptz/);
+  assert.match(schema, /status writing_session_status not null default 'draft'/);
+  assert.match(schema, /attempt_number integer not null default 1/);
+  assert.match(schema, /writing_sessions_attempt_unique/);
   assert.match(schema, /check \(locked_at is null or submitted_at is not null\)/);
+});
+
+test("schema separates mutable session state from immutable evidence", () => {
+  assert.match(schema, /create table if not exists writing_session_state/);
+  assert.match(schema, /current_text text not null default ''/);
+  assert.match(schema, /last_event_index integer not null default -1/);
+  assert.match(schema, /kind snapshot_kind not null default 'submitted'/);
+  assert.match(schema, /submission_snapshots_session_kind_idx/);
+});
+
+test("schema supports authenticated identity and professor assignment access", () => {
+  assert.match(schema, /create table if not exists auth_identities/);
+  assert.match(schema, /unique \(provider, provider_subject\)/);
+  assert.match(schema, /create table if not exists assignment_instructors/);
+  assert.match(schema, /primary key \(assignment_id, professor_id\)/);
+});
+
+test("schema captures AI evaluation audit metadata", () => {
+  assert.match(schema, /report_id uuid references professor_reports/);
+  assert.match(schema, /prompt_hash text/);
+  assert.match(schema, /input_hash text/);
+  assert.match(schema, /output_hash text/);
+  assert.match(schema, /latency_ms integer/);
+  assert.match(schema, /token_usage jsonb/);
+  assert.match(schema, /ai_evaluation_logs_session_created_idx/);
 });
 
 test("schema avoids misconduct and suspicion labels", () => {

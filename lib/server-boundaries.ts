@@ -1,6 +1,7 @@
 import type { Snapshot, WritingEvent } from "./writing-events";
 import type { ReplayFrame } from "./replay";
 import type { SummaryComparison } from "./summary-comparison";
+import type { Observation } from "./writing-events";
 
 export type ApiBoundary = {
   method: "GET" | "POST";
@@ -80,6 +81,13 @@ export type ReplayResponse = {
 };
 
 export type SummaryComparisonResponse = SummaryComparison;
+
+export type ProfessorReportResponse = {
+  observations: Observation[];
+  frames: ReplayFrame[];
+  submittedText: string;
+  summaryText: string;
+};
 
 export function canAppendEvent(session: { lockedAt: number | null }) {
   return session.lockedAt === null;

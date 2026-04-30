@@ -23,6 +23,7 @@ import { comparisonToObservations, type SummaryComparison } from "@/lib/summary-
 import type {
   AppendWritingEventRequest,
   LockSubmissionRequest,
+  ProfessorReportResponse,
   TimedSummaryRequest
 } from "@/lib/server-boundaries";
 import { DEMO_SESSION_ID } from "@/lib/demo-ids";
@@ -45,7 +46,9 @@ export default function Home() {
   const [remainingSeconds, setRemainingSeconds] = useState(120);
   const [replayFrames, setReplayFrames] = useState<ReplayFrame[]>([]);
   const [comparison, setComparison] = useState<SummaryComparison | null>(null);
+  const [professorReport, setProfessorReport] = useState<ProfessorReportResponse | null>(null);
   const [serverSyncError, setServerSyncError] = useState("");
+  const [reportLoadError, setReportLoadError] = useState("");
   const [replayIndex, setReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const summaryStartedAtRef = useRef<number | null>(null);
@@ -58,6 +61,9 @@ export default function Home() {
   const summaryTimerRef = useRef<number | null>(null);
   const replayTimerRef = useRef<number | null>(null);
   const mutationQueueRef = useRef(Promise.resolve(true));
+
+  const currentUser = users.find((user) => user.id === currentUserId) || users[0];
+  const activeRole = currentUser.role;
 
   useEffect(() => {
     const workspace = loadWorkspace(window.localStorage);
@@ -155,16 +161,43 @@ export default function Home() {
   }, [persistenceReady, submittedText, summaryText]);
 
   useEffect(() => {
+    if (!persistenceReady || activeRole !== "professor") {
+      setProfessorReport(null);
+      setReportLoadError("");
+      return;
+    }
+
+    const controller = new AbortController();
+    setProfessorReport(null);
+    setReportLoadError("");
+    fetch(`/api/reports/${DEMO_SESSION_ID}?professorId=${encodeURIComponent(currentUser.id)}`, {
+      signal: controller.signal
+    })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Report loading failed")))
+      .then((data: ProfessorReportResponse) => {
+        setProfessorReport(data);
+        setReplayIndex((current) => Math.min(current, Math.max(0, data.frames.length - 1)));
+        setReportLoadError("");
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError") {
+          setProfessorReport(null);
+          setReportLoadError(error.message);
+        }
+      });
+
+    return () => controller.abort();
+  }, [activeRole, currentUser.id, persistenceReady]);
+
+  useEffect(() => {
     return () => {
       if (summaryTimerRef.current) window.clearInterval(summaryTimerRef.current);
       if (replayTimerRef.current) window.clearInterval(replayTimerRef.current);
     };
   }, []);
 
-  const currentUser = users.find((user) => user.id === currentUserId) || users[0];
-  const activeRole = currentUser.role;
   const submitted = submittedAt !== null;
-  const observations = useMemo(() => {
+  const studentObservations = useMemo(() => {
     if (!submittedText) return [];
     const items: Observation[] = analyzeProcess(events, submittedText);
     if (comparison) items.push(...comparisonToObservations(comparison));
@@ -173,7 +206,9 @@ export default function Home() {
 
   const pasteCount = events.filter((event) => event.type === "paste").length;
   const deletionCount = events.filter((event) => event.deletionEvent).length;
-  const replayFrame = replayFrames[replayIndex];
+  const observations = activeRole === "professor" ? professorReport?.observations ?? [] : studentObservations;
+  const activeReplayFrames = activeRole === "professor" ? professorReport?.frames ?? [] : replayFrames;
+  const replayFrame = activeReplayFrames[replayIndex];
 
   function recordEvent(event: Omit<WritingEvent, "id">) {
     const localEvent = {
@@ -286,7 +321,7 @@ export default function Home() {
     replayTimerRef.current = window.setInterval(() => {
       setReplayIndex((current) => {
         const next = current + 1;
-        if (next > replayFrames.length - 1) {
+        if (next > activeReplayFrames.length - 1) {
           if (replayTimerRef.current) window.clearInterval(replayTimerRef.current);
           replayTimerRef.current = null;
           setIsPlaying(false);
@@ -441,7 +476,9 @@ export default function Home() {
                     <h2>Neutral Evidence Report</h2>
                   </div>
                 </div>
-                {observations.length ? (
+                {reportLoadError ? (
+                  <div className="report-empty">{reportLoadError}</div>
+                ) : observations.length ? (
                   <div className="event-list">
                     {observations.map((item, index) => (
                       <article className="event-card" key={`${item.title}-${index}`}>
@@ -468,7 +505,7 @@ export default function Home() {
                   id="replay-slider"
                   type="range"
                   min="0"
-                  max={Math.max(0, replayFrames.length - 1)}
+                  max={Math.max(0, activeReplayFrames.length - 1)}
                   value={replayIndex}
                   onChange={(event) => setReplayIndex(Number(event.target.value))}
                 />

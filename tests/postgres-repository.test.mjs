@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   appendWritingEventPostgres,
+  getProfessorReportPostgres,
   lockSubmissionPostgres,
   storeTimedSummaryPostgres
 } from "../lib/postgres-repository.ts";
@@ -37,6 +38,10 @@ test("appendWritingEventPostgres uses locked session ownership and parameterized
   assert.match(client.calls[0].sql, /for update/);
   assert.match(client.calls[2].sql, /insert into writing_events/);
   assert.deepEqual(client.calls[2].params.slice(0, 4), ["session-1", 2, "insert", 1000]);
+  assert.match(client.calls[4].sql, /insert into writing_session_state/);
+  assert.equal(client.calls[4].params[1], "Hello");
+  assert.equal(client.calls[4].params[2].length, 64);
+  assert.equal(client.calls[4].params[3], 2);
 });
 
 test("appendWritingEventPostgres rejects locked sessions", async () => {
@@ -71,8 +76,11 @@ test("lockSubmissionPostgres inserts hashed snapshot and locks session", async (
 
   assert.deepEqual(result, { ok: true, value: { submittedAt: 2000, lockedAt: 2000, snapshotIndex: 1 } });
   assert.match(client.calls[2].sql, /insert into submission_snapshots/);
+  assert.match(client.calls[2].sql, /'submitted'/);
   assert.equal(client.calls[2].params[4].length, 64);
   assert.match(client.calls[3].sql, /update writing_sessions/);
+  assert.match(client.calls[3].sql, /status = 'summary_pending'/);
+  assert.match(client.calls[4].sql, /insert into writing_session_state/);
 });
 
 test("storeTimedSummaryPostgres inserts one hashed summary after submission", async () => {
@@ -93,6 +101,7 @@ test("storeTimedSummaryPostgres inserts one hashed summary after submission", as
   assert.equal(result.ok, true);
   assert.match(client.calls[2].sql, /insert into timed_summaries/);
   assert.equal(client.calls[2].params[4].length, 64);
+  assert.match(client.calls[3].sql, /status = 'summary_submitted'/);
 });
 
 test("storeTimedSummaryPostgres rejects duplicate summaries and invalid time ranges", async () => {
@@ -125,4 +134,50 @@ test("storeTimedSummaryPostgres rejects duplicate summaries and invalid time ran
     status: 400,
     error: "Timed summary completion must be after start."
   });
+});
+
+test("getProfessorReportPostgres loads observations and replay frames for owned sessions", async () => {
+  const client = createMockClient([
+    { rows: [{ id: "session-1" }] },
+    { rows: [
+      {
+        id: "event-1",
+        type: "insert",
+        occurred_at: new Date(1000),
+        input_type: "insertText",
+        start_offset: 0,
+        removed: "",
+        added: "Process evidence supports revision",
+        removed_characters: 0,
+        added_words: 4,
+        removed_words: 0,
+        duration_since_previous_ms: 0,
+        paste_words: 0,
+        deletion_event: false,
+        words: null
+      }
+    ] },
+    { rows: [
+      { captured_at: new Date(0), text: "" },
+      { captured_at: new Date(2000), text: "Process evidence supports revision" }
+    ] },
+    { rows: [{ summary_text: "Process evidence and revision were discussed." }] }
+  ]);
+
+  const result = await getProfessorReportPostgres(client, "session-1", "professor-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.submittedText, "Process evidence supports revision");
+  assert.ok(result.value.observations.some((item) => item.group === "Comprehension Check"));
+  assert.equal(result.value.frames.length, 2);
+  assert.match(client.calls[0].sql, /join assignment_instructors/);
+});
+
+test("getProfessorReportPostgres rejects sessions outside professor ownership", async () => {
+  const client = createMockClient([{ rows: [] }]);
+
+  const result = await getProfessorReportPostgres(client, "session-1", "professor-1");
+
+  assert.deepEqual(result, { ok: false, status: 404, error: "Report not found." });
+  assert.equal(client.calls.length, 1);
 });
