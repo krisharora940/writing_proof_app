@@ -1,13 +1,21 @@
 import type {
   AppendWritingEventRequest,
+  AssignmentRosterResponse,
   AssignmentSubmissionListResponse,
+  CreateProfessorAssignmentBody,
+  CreateProfessorAssignmentResponse,
+  EnrollAssignmentStudentBody,
+  PasteEventCard,
   ProfessorReportResponse,
   ProfessorAssignmentListResponse,
+  ReportTimelineMarker,
   ReportExportResponse,
   ReplayResponse,
-  ResetSessionResponse,
+  RemoveAssignmentStudentBody,
+  SessionMetricsResponse,
   SummaryComparisonResponse,
   LockSubmissionRequest,
+  StudentAssignmentListResponse,
   StudentSessionResponse,
   TimedSummaryRequest
 } from "./server-boundaries";
@@ -15,8 +23,10 @@ import { DEMO_ASSIGNMENT_ID, DEMO_PROFESSOR_ID, DEMO_SESSION_ID, DEMO_STUDENT_ID
 import { createReportExport, type ReportExportFormat } from "./report-export.ts";
 import { reconstructReplay } from "./replay.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
-import { analyzeProcess } from "./writing-events.ts";
+import { generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
+import { analyzeProcess, calculateSessionMetrics, countWords } from "./writing-events.ts";
 import type { Snapshot, WritingEvent } from "./writing-events";
+import type { ReplayFrame } from "./replay";
 
 export type ServerSession = {
   id: string;
@@ -37,6 +47,8 @@ export type StoredTimedSummary = {
 };
 
 export type DemoRepositoryState = {
+  assignments: ProfessorAssignmentListResponse["assignments"];
+  roster: AssignmentRosterResponse["students"];
   session: ServerSession;
   draftText: string;
   events: WritingEvent[];
@@ -49,8 +61,138 @@ export type MutationResult<T> =
   | { ok: true; value: T }
   | { ok: false; status: number; error: string };
 
+type ReportProcessHighlights = Pick<ProfessorReportResponse, "pasteEventCards" | "timelineMarkers">;
+
+export function buildReportProcessHighlights(
+  events: WritingEvent[],
+  frames: ReplayFrame[],
+  tags: ProfessorReportResponse["tags"]
+): ReportProcessHighlights {
+  const orderedEvents = [...events].sort((a, b) => a.at - b.at);
+  const tagsByEvent = new Map<string, ProfessorReportResponse["tags"]>();
+  tags.forEach((tag) => {
+    if (!tag.eventId) return;
+    tagsByEvent.set(tag.eventId, [...(tagsByEvent.get(tag.eventId) || []), tag]);
+  });
+
+  const pasteEventCards: PasteEventCard[] = orderedEvents
+    .filter((event) => event.type === "paste")
+    .map((event) => {
+      const wordCount = event.pasteWords || event.addedWords || countWords(event.added || "");
+      const characterCount = event.added?.length || 0;
+      const eventTags = tagsByEvent.get(event.id) || [];
+      return {
+        id: `paste-card-${event.id}`,
+        eventId: event.id,
+        at: event.at,
+        title: "Paste event",
+        detail: describePasteEvent(wordCount, characterCount),
+        wordCount,
+        characterCount,
+        textPreview: previewText(event.added || ""),
+        tagIds: eventTags.map((tag) => tag.id),
+        replayFrameIndex: frameIndexForEvent(frames, event.id)
+      };
+    });
+
+  const timelineMarkers: ReportTimelineMarker[] = [];
+  const firstFrame = frames[0];
+  if (firstFrame) {
+    timelineMarkers.push({
+      id: "timeline-draft-start",
+      eventId: null,
+      at: firstFrame.at,
+      kind: "draft-start",
+      label: "Draft started",
+      detail: "Replay begins from the first saved draft state.",
+      tagIds: [],
+      replayFrameIndex: 0
+    });
+  }
+
+  orderedEvents.forEach((event) => {
+    const eventTags = tagsByEvent.get(event.id) || [];
+    if (event.type === "paste") {
+      const wordCount = event.pasteWords || event.addedWords || countWords(event.added || "");
+      timelineMarkers.push({
+        id: `timeline-paste-${event.id}`,
+        eventId: event.id,
+        at: event.at,
+        kind: "paste-event",
+        label: "Paste input",
+        detail: describePasteEvent(wordCount, event.added?.length || 0),
+        tagIds: eventTags.map((tag) => tag.id),
+        replayFrameIndex: frameIndexForEvent(frames, event.id)
+      });
+    }
+
+    if (event.type === "submit") {
+      timelineMarkers.push({
+        id: `timeline-submit-${event.id}`,
+        eventId: event.id,
+        at: event.at,
+        kind: "submission",
+        label: "Submission recorded",
+        detail: event.words ? `${event.words} words were submitted.` : "The writing session was submitted.",
+        tagIds: eventTags.map((tag) => tag.id),
+        replayFrameIndex: frameIndexForEvent(frames, event.id)
+      });
+    }
+  });
+
+  tags
+    .filter((tag) => typeof tag.at === "number" && !tag.eventId)
+    .forEach((tag) => {
+      timelineMarkers.push({
+        id: `timeline-tag-${tag.id}`,
+        eventId: null,
+        at: tag.at as number,
+        kind: "report-tag",
+        label: tag.label,
+        detail: tag.detail,
+        tagIds: [tag.id],
+        replayFrameIndex: null
+      });
+    });
+
+  return {
+    pasteEventCards,
+    timelineMarkers: timelineMarkers.sort((a, b) => a.at - b.at)
+  };
+}
+
+function describePasteEvent(wordCount: number, characterCount: number) {
+  if (wordCount && characterCount) return `${wordCount} words and ${characterCount} characters were inserted through paste input.`;
+  if (wordCount) return `${wordCount} words were inserted through paste input.`;
+  if (characterCount) return `${characterCount} characters were inserted through paste input.`;
+  return "Text was inserted through paste input.";
+}
+
+function previewText(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 160 ? `${normalized.slice(0, 157)}...` : normalized;
+}
+
+function frameIndexForEvent(frames: ReplayFrame[], eventId: string) {
+  const index = frames.findIndex((frame) => frame.eventId === eventId);
+  return index >= 0 ? index : null;
+}
+
 export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState {
   return {
+    assignments: [{
+      id: DEMO_ASSIGNMENT_ID,
+      title: "Process Evidence Reflection",
+      prompt: "Write a short paper on whether process evidence is fairer than final-text AI detection.",
+      dueAt: null,
+      createdAt: 0
+    }],
+    roster: [{
+      studentId: DEMO_STUDENT_ID,
+      studentName: "Demo Student",
+      studentEmail: "student@example.test",
+      enrolledAt: 0
+    }],
     session: {
       id: DEMO_SESSION_ID,
       assignmentId: DEMO_ASSIGNMENT_ID,
@@ -77,6 +219,8 @@ export function getDemoRepositoryState() {
 export function resetDemoRepository(now = Date.now()) {
   const nextState = createDemoRepositoryState(now);
   repositoryState.session = nextState.session;
+  repositoryState.assignments = nextState.assignments;
+  repositoryState.roster = nextState.roster;
   repositoryState.draftText = nextState.draftText;
   repositoryState.events = nextState.events;
   repositoryState.snapshots = nextState.snapshots;
@@ -158,10 +302,14 @@ export function storeTimedSummary(
 
 export function getCurrentStudentSessionDemo(
   state: DemoRepositoryState,
-  studentId: string
+  studentId: string,
+  assignmentId?: string
 ): MutationResult<StudentSessionResponse> {
   if (studentId !== state.session.studentId) {
     return { ok: false, status: 403, error: "Student cannot access this session." };
+  }
+  if (assignmentId && assignmentId !== state.session.assignmentId) {
+    return { ok: false, status: 404, error: "No assignment found for this student." };
   }
 
   return {
@@ -191,7 +339,34 @@ export function getCurrentStudentSessionDemo(
   };
 }
 
-export function listProfessorAssignmentsDemo(professorId: string): MutationResult<ProfessorAssignmentListResponse> {
+export function listStudentAssignmentsDemo(
+  state: DemoRepositoryState,
+  studentId: string
+): MutationResult<StudentAssignmentListResponse> {
+  if (!state.roster.some((student) => student.studentId === studentId)) {
+    return { ok: false, status: 403, error: "Student cannot access assignments." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      assignments: state.assignments.map((assignment) => ({
+        ...assignment,
+        enrolledAt: state.roster.find((student) => student.studentId === studentId)?.enrolledAt || 0,
+        sessionId: state.session.assignmentId === assignment.id ? state.session.id : null,
+        status: state.session.assignmentId === assignment.id ? state.session.status || "draft" : "not_started",
+        submittedAt: state.session.assignmentId === assignment.id ? state.session.submittedAt : null,
+        lockedAt: state.session.assignmentId === assignment.id ? state.session.lockedAt : null,
+        attemptNumber: state.session.assignmentId === assignment.id ? state.session.attemptNumber || 1 : null
+      }))
+    }
+  };
+}
+
+export function listProfessorAssignmentsDemo(
+  professorId: string,
+  state = repositoryState
+): MutationResult<ProfessorAssignmentListResponse> {
   if (professorId !== DEMO_PROFESSOR_ID) {
     return { ok: false, status: 403, error: "Professor cannot access assignments." };
   }
@@ -199,14 +374,98 @@ export function listProfessorAssignmentsDemo(professorId: string): MutationResul
   return {
     ok: true,
     value: {
-      assignments: [{
-        id: DEMO_ASSIGNMENT_ID,
-        title: "Process Evidence Reflection",
-        prompt: "Write a short paper on whether process evidence is fairer than final-text AI detection.",
-        createdAt: 0
-      }]
+      assignments: state.assignments
     }
   };
+}
+
+export function createProfessorAssignmentDemo(
+  state: DemoRepositoryState,
+  professorId: string,
+  body: CreateProfessorAssignmentBody
+): MutationResult<CreateProfessorAssignmentResponse> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot create assignments." };
+  }
+
+  const title = body.title.trim();
+  const prompt = body.prompt.trim();
+  if (!title || !prompt) return { ok: false, status: 400, error: "Assignment title and prompt are required." };
+
+  const assignment = {
+    id: crypto.randomUUID(),
+    title,
+    prompt,
+    dueAt: typeof body.dueAt === "number" ? body.dueAt : null,
+    createdAt: Date.now()
+  };
+  state.assignments = [assignment, ...state.assignments];
+  return { ok: true, value: { assignment } };
+}
+
+export function listAssignmentRosterDemo(
+  state: DemoRepositoryState,
+  assignmentId: string,
+  professorId: string
+): MutationResult<AssignmentRosterResponse> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot access this roster." };
+  }
+  if (!state.assignments.some((assignment) => assignment.id === assignmentId)) {
+    return { ok: false, status: 404, error: "Assignment not found." };
+  }
+
+  const students = assignmentId === DEMO_ASSIGNMENT_ID ? state.roster : [];
+  return { ok: true, value: { students } };
+}
+
+export function enrollAssignmentStudentDemo(
+  state: DemoRepositoryState,
+  assignmentId: string,
+  professorId: string,
+  body: EnrollAssignmentStudentBody
+): MutationResult<AssignmentRosterResponse["students"][number]> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot manage this roster." };
+  }
+  if (!state.assignments.some((assignment) => assignment.id === assignmentId)) {
+    return { ok: false, status: 404, error: "Assignment not found." };
+  }
+
+  const email = body.email.trim().toLowerCase();
+  const studentName = body.displayName.trim();
+  if (!email || !studentName) return { ok: false, status: 400, error: "Student name and email are required." };
+  if (state.roster.some((student) => student.studentEmail === email)) {
+    return { ok: false, status: 409, error: "Student is already enrolled." };
+  }
+
+  const student = {
+    studentId: crypto.randomUUID(),
+    studentName,
+    studentEmail: email,
+    enrolledAt: Date.now()
+  };
+  state.roster = [...state.roster, student];
+  return { ok: true, value: student };
+}
+
+export function removeAssignmentStudentDemo(
+  state: DemoRepositoryState,
+  assignmentId: string,
+  professorId: string,
+  body: RemoveAssignmentStudentBody
+): MutationResult<{ studentId: string }> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot manage this roster." };
+  }
+  if (assignmentId === DEMO_ASSIGNMENT_ID && body.studentId === DEMO_STUDENT_ID) {
+    return { ok: false, status: 409, error: "Demo student cannot be removed from the active demo assignment." };
+  }
+
+  const beforeCount = state.roster.length;
+  state.roster = state.roster.filter((student) => student.studentId !== body.studentId);
+  if (state.roster.length === beforeCount) return { ok: false, status: 404, error: "Student enrollment not found." };
+  return { ok: true, value: { studentId: body.studentId } };
 }
 
 export function listAssignmentSubmissionsDemo(
@@ -226,44 +485,12 @@ export function listAssignmentSubmissionsDemo(
         sessionId: state.session.id,
         studentId: state.session.studentId,
         studentName: "Demo Student",
+        studentEmail: "student@example.test",
         status: state.session.status || "draft",
         submittedAt: state.session.submittedAt,
         lockedAt: state.session.lockedAt,
         attemptNumber: state.session.attemptNumber || 1
       }]
-    }
-  };
-}
-
-export function resetCurrentStudentSessionDemo(
-  state: DemoRepositoryState,
-  studentId: string
-): MutationResult<ResetSessionResponse> {
-  if (studentId !== state.session.studentId) {
-    return { ok: false, status: 403, error: "Student cannot reset this session." };
-  }
-
-  const nextAttempt = (state.session.attemptNumber || 1) + 1;
-  state.session = {
-    ...state.session,
-    id: crypto.randomUUID(),
-    submittedAt: null,
-    lockedAt: null,
-    status: "draft",
-    attemptNumber: nextAttempt
-  };
-  state.draftText = "";
-  state.events = [];
-  state.snapshots = [{ at: Date.now(), text: "" }];
-  state.submittedText = "";
-  state.timedSummary = null;
-
-  return {
-    ok: true,
-    value: {
-      sessionId: state.session.id,
-      assignmentId: state.session.assignmentId,
-      attemptNumber: nextAttempt
     }
   };
 }
@@ -279,15 +506,23 @@ export function getProfessorReportDemo(
   }
 
   const observations = state.submittedText ? analyzeProcess(state.events, state.submittedText) : [];
+  const tags = state.submittedText ? generateProcessEvidenceTags(state.events, state.submittedText) : [];
   if (state.submittedText && state.timedSummary?.summaryText) {
-    observations.push(...comparisonToObservations(compareSummaryToPaper(state.submittedText, state.timedSummary.summaryText)));
+    const comparison = compareSummaryToPaper(state.submittedText, state.timedSummary.summaryText);
+    observations.push(...comparisonToObservations(comparison));
+    tags.push(...generateSummaryEvidenceTags(comparison));
   }
+  tags.push(...generateObservationEvidenceTags(observations));
+  const frames = reconstructReplay(state.snapshots, state.events);
+  const highlights = buildReportProcessHighlights(state.events, frames, tags);
 
   return {
     ok: true,
     value: {
       observations,
-      frames: reconstructReplay(state.snapshots, state.events),
+      tags,
+      frames,
+      ...highlights,
       submittedText: state.submittedText,
       summaryText: state.timedSummary?.summaryText || ""
     }
@@ -311,6 +546,22 @@ export function getReplayDemo(
     ok: true,
     value: {
       frames: reconstructReplay(state.snapshots, state.events)
+    }
+  };
+}
+
+export function getSessionMetricsDemo(
+  state: DemoRepositoryState,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+): MutationResult<SessionMetricsResponse> {
+  const accessError = requireSessionAccess(state, sessionId, user);
+  if (accessError) return accessError;
+
+  return {
+    ok: true,
+    value: {
+      metrics: calculateSessionMetrics(state.events, state.submittedText || state.draftText)
     }
   };
 }
@@ -355,6 +606,21 @@ function requireStudentSession(
 ): MutationResult<never> | null {
   if (state.session.id !== sessionId) return { ok: false, status: 404, error: "Writing session not found." };
   if (state.session.studentId !== studentId) return { ok: false, status: 403, error: "Student cannot access this session." };
+  return null;
+}
+
+function requireSessionAccess(
+  state: DemoRepositoryState,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+): MutationResult<never> | null {
+  if (state.session.id !== sessionId) return { ok: false, status: 404, error: "Session not found." };
+  if (user.role === "student" && user.id !== state.session.studentId) {
+    return { ok: false, status: 404, error: "Session not found." };
+  }
+  if (user.role === "professor" && user.id !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 404, error: "Session not found." };
+  }
   return null;
 }
 

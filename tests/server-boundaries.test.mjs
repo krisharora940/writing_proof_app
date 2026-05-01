@@ -12,11 +12,16 @@ test("API boundaries cover student writes and professor review reads", () => {
   const paths = API_BOUNDARIES.map((boundary) => boundary.path);
 
   [
+    "/api/assignments",
     "/api/writing-events",
+    "/api/auth/signup",
     "/api/submissions/lock",
     "/api/timed-summaries",
     "/api/replay",
+    "/api/sessions/:sessionId/metrics",
     "/api/summary-comparison",
+    "/api/professor/assignments",
+    "/api/professor/assignments/:assignmentId/students",
     "/api/reports/:sessionId",
     "/api/reports/:sessionId/export"
   ].forEach((path) => {

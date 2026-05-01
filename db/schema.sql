@@ -70,6 +70,15 @@ create table if not exists auth_identities (
   unique (provider, provider_subject)
 );
 
+create table if not exists auth_credentials (
+  user_id uuid primary key references app_users(id) on delete cascade,
+  email text not null unique,
+  password_hash text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (position('scrypt$' in password_hash) = 1)
+);
+
 create table if not exists assignments (
   id uuid primary key default gen_random_uuid(),
   professor_id uuid not null references app_users(id),
@@ -340,6 +349,7 @@ add column if not exists latency_ms integer,
 add column if not exists token_usage jsonb;
 
 create index if not exists auth_identities_user_idx on auth_identities(user_id);
+create index if not exists auth_credentials_email_idx on auth_credentials(email);
 create index if not exists assignments_professor_created_idx on assignments(professor_id, created_at desc);
 create index if not exists assignment_instructors_professor_idx on assignment_instructors(professor_id);
 create index if not exists assignment_students_student_idx on assignment_students(student_id);

@@ -9,9 +9,10 @@ export async function GET(request: Request) {
   if (!user) return unauthorized();
   if (user.role !== "student") return forbidden("Only students can load a writing session.");
 
+  const assignmentId = new URL(request.url).searchParams.get("assignmentId") || undefined;
   const result = hasDatabaseUrl()
-    ? await getCurrentStudentSessionPostgres(getDatabaseClient(), user.id)
-    : getCurrentStudentSessionDemo(getDemoRepositoryState(), user.id);
+    ? await getCurrentStudentSessionPostgres(getDatabaseClient(), user.id, assignmentId)
+    : getCurrentStudentSessionDemo(getDemoRepositoryState(), user.id, assignmentId);
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
 
   return NextResponse.json(result.value);

@@ -38,8 +38,10 @@ export function createReportExport(report: ProfessorReportResponse, format: Repo
 }
 
 function createCsv(report: ProfessorReportResponse) {
+  const tags = report.tags || [];
   const rows = [
     ["section", "group", "title", "detail"],
+    ...tags.map((item) => ["tag", item.category, item.label, item.detail]),
     ...report.observations.map((item) => ["observation", item.group, item.title, item.detail]),
     ["submitted_text", "", "", report.submittedText],
     ["timed_summary", "", "", report.summaryText]
@@ -49,6 +51,9 @@ function createCsv(report: ProfessorReportResponse) {
 }
 
 function createHtml(report: ProfessorReportResponse) {
+  const tags = (report.tags || []).map((item) => (
+    `<article><p>${escapeHtml(item.category)}</p><h2>${escapeHtml(item.label)}</h2><p>${escapeHtml(item.detail)}</p></article>`
+  )).join("");
   const observations = report.observations.map((item) => (
     `<article><p>${escapeHtml(item.group)}</p><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.detail)}</p></article>`
   )).join("");
@@ -58,6 +63,9 @@ function createHtml(report: ProfessorReportResponse) {
     "<html><head><meta charset=\"utf-8\"><title>Neutral Evidence Report</title>",
     "<style>body{font-family:Arial,sans-serif;line-height:1.5;max-width:920px;margin:40px auto;padding:0 24px;color:#17202a}article{border-top:1px solid #ccd5df;padding:16px 0}p:first-child{font-size:12px;text-transform:uppercase;color:#56616f}pre{white-space:pre-wrap;background:#f6f8fa;padding:16px;border-radius:6px}</style>",
     "</head><body><h1>Neutral Evidence Report</h1>",
+    "<h2>Evidence Tags</h2>",
+    tags || "<p>No evidence tags available.</p>",
+    "<h2>Observations</h2>",
     observations || "<p>No observations available.</p>",
     "<h2>Submitted Text</h2>",
     `<pre>${escapeHtml(report.submittedText)}</pre>`,
@@ -71,6 +79,13 @@ function createPdf(report: ProfessorReportResponse) {
   const lines = [
     "Neutral Evidence Report",
     "",
+    "Evidence Tags",
+    ...(report.tags || []).flatMap((item) => [
+      `${item.category}: ${item.label}`,
+      item.detail,
+      ""
+    ]),
+    "Observations",
     ...report.observations.flatMap((item) => [
       `${item.group}: ${item.title}`,
       item.detail,

@@ -4,13 +4,18 @@ import test from "node:test";
 
 import {
   createSessionCookieValue,
+  createCredentialUser,
   forbidden,
   getDemoAuthenticatedUser,
   getDemoAuthenticatedUserForCredentials,
+  getAuthenticatedUserForPassword,
+  hashPassword,
   isDemoLoginAllowed,
   readSessionUserId,
   SESSION_COOKIE,
-  unauthorized
+  unauthorized,
+  validatePassword,
+  verifyPassword
 } from "../lib/auth.ts";
 import { DEMO_PROFESSOR_ID, DEMO_STUDENT_ID } from "../lib/demo-ids.ts";
 
@@ -40,17 +45,92 @@ test("production requires an explicit session secret", () => {
   else process.env.AUTH_SESSION_SECRET = originalSecret;
 });
 
-test("production demo credential login is rejected unless demo login is explicitly allowed outside deployments", () => {
+test("production demo credential login is always rejected", () => {
   assert.equal(isDemoLoginAllowed({ NODE_ENV: "production", ALLOW_DEMO_LOGIN: undefined }), false);
-  assert.equal(isDemoLoginAllowed({ NODE_ENV: "production", ALLOW_DEMO_LOGIN: "true" }), true);
+  assert.equal(isDemoLoginAllowed({ NODE_ENV: "production", ALLOW_DEMO_LOGIN: "true" }), false);
   assert.equal(isDemoLoginAllowed({ NODE_ENV: "production", ALLOW_DEMO_LOGIN: "true", VERCEL: "1" }), false);
+  assert.equal(isDemoLoginAllowed({ NODE_ENV: "development" }), true);
 
   const loginRoute = readFileSync(new URL("../app/api/auth/login/route.ts", import.meta.url), "utf8");
   assert.doesNotMatch(loginRoute, /userId && isDemoLoginAllowed\(\)/);
-  assert.match(loginRoute, /parseDemoCredentials\(body\)/);
+  assert.match(loginRoute, /parseCredentials\(body\)/);
+  assert.match(loginRoute, /getAuthenticatedUserForPassword/);
   assert.match(loginRoute, /getDemoAuthenticatedUserForCredentials/);
   assert.match(loginRoute, /verifyProviderToken\(request\)/);
   assert.match(loginRoute, /rateLimit\(request, "auth-login"/);
+});
+
+test("password hashes are salted and verifiable", async () => {
+  assert.equal(validatePassword("short"), "Password must be at least 12 characters.");
+  const hash = await hashPassword("writerPass123");
+  assert.match(hash, /^scrypt\$/);
+  assert.equal(await verifyPassword("writerPass123", hash), true);
+  assert.equal(await verifyPassword("wrongPass123", hash), false);
+});
+
+test("credential signup creates a professor account and password login resolves it", async () => {
+  const passwordHash = await hashPassword("teacherPass123");
+  const client = {
+    calls: [],
+    async query(sql, params = []) {
+      this.calls.push({ sql, params });
+      if (/select id, display_name, role from app_users/.test(sql)) return { rows: [] };
+      if (/insert into app_users/.test(sql)) {
+        return { rows: [{ id: "professor-1", display_name: "New Professor", role: "professor" }] };
+      }
+      if (/insert into auth_credentials/.test(sql)) return { rows: [{ user_id: "professor-1" }] };
+      if (/from auth_credentials/.test(sql)) {
+        return {
+          rows: [{
+            id: "professor-1",
+            display_name: "New Professor",
+            role: "professor",
+            password_hash: passwordHash
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await createCredentialUser(client, {
+    displayName: "New Professor",
+    email: "Professor@Example.edu",
+    password: "teacherPass123",
+    role: "professor"
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.user, { id: "professor-1", name: "New Professor", role: "professor" });
+  assert.match(client.calls.find((call) => /insert into auth_credentials/.test(call.sql)).params[2], /^scrypt\$/);
+
+  const user = await getAuthenticatedUserForPassword(client, "professor@example.edu", "teacherPass123");
+  assert.deepEqual(user, { id: "professor-1", name: "New Professor", role: "professor" });
+});
+
+test("student signup can attach credentials to an invited student account", async () => {
+  const client = {
+    calls: [],
+    async query(sql, params = []) {
+      this.calls.push({ sql, params });
+      if (/select id, display_name, role from app_users/.test(sql)) {
+        return { rows: [{ id: "student-1", display_name: "Invited Student", role: "student" }] };
+      }
+      if (/insert into auth_credentials/.test(sql)) return { rows: [{ user_id: "student-1" }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await createCredentialUser(client, {
+    displayName: "Invited Student",
+    email: "student@example.edu",
+    password: "studentPass123",
+    role: "student",
+    inviteCode: "school-code"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(client.calls.some((call) => /insert into app_users/.test(call.sql)), false);
+  assert.equal(client.calls.some((call) => /insert into auth_credentials/.test(call.sql)), true);
 });
 
 test("demo auth resolves known users and rejects unknown users", () => {

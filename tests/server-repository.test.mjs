@@ -5,7 +5,6 @@ import {
   appendWritingEvent,
   createDemoRepositoryState,
   getProfessorReportDemo,
-  resetCurrentStudentSessionDemo,
   lockSubmission,
   storeTimedSummary
 } from "../lib/server-repository.ts";
@@ -13,6 +12,10 @@ import {
 const DEMO_STUDENT_ID = "11111111-1111-4111-8111-111111111111";
 const DEMO_PROFESSOR_ID = "22222222-2222-4222-8222-222222222222";
 const DEMO_SESSION_ID = "44444444-4444-4444-8444-444444444444";
+
+function makeWords(count) {
+  return Array.from({ length: count }, (_, index) => `word${index + 1}`).join(" ");
+}
 
 test("appendWritingEvent appends events while the session is unlocked", () => {
   const state = createDemoRepositoryState(1000);
@@ -171,22 +174,45 @@ test("getProfessorReportDemo returns report data for the owning professor", () =
   assert.equal(result.ok, true);
   assert.equal(result.value.submittedText, "Process evidence supports revision");
   assert.ok(result.value.observations.some((item) => item.group === "Comprehension Check"));
+  assert.ok(result.value.tags.some((item) => item.category === "Report Observation"));
   assert.equal(result.value.frames.length, 2);
 });
 
-test("resetCurrentStudentSessionDemo creates a new attempt without keeping old draft state", () => {
+test("getProfessorReportDemo returns neutral paste cards and timeline markers", () => {
   const state = createDemoRepositoryState(1000);
+  const pastedText = makeWords(60);
+
   appendWritingEvent(state, {
     sessionId: DEMO_SESSION_ID,
     studentId: DEMO_STUDENT_ID,
-    event: { type: "insert", at: 1100, start: 0, removed: "", added: "Draft", addedWords: 1 }
+    event: {
+      type: "paste",
+      at: 1100,
+      start: 0,
+      removed: "",
+      added: pastedText,
+      addedWords: 60,
+      pasteWords: 60
+    }
+  });
+  lockSubmission(state, {
+    sessionId: DEMO_SESSION_ID,
+    studentId: DEMO_STUDENT_ID,
+    submittedText: pastedText,
+    snapshot: { at: 1200, text: pastedText }
   });
 
-  const result = resetCurrentStudentSessionDemo(state, DEMO_STUDENT_ID);
+  const result = getProfessorReportDemo(state, DEMO_SESSION_ID, DEMO_PROFESSOR_ID);
 
   assert.equal(result.ok, true);
-  assert.equal(result.value.attemptNumber, 2);
-  assert.equal(state.draftText, "");
-  assert.equal(state.events.length, 0);
-  assert.equal(state.session.lockedAt, null);
+  assert.equal(result.value.pasteEventCards.length, 1);
+  assert.equal(result.value.pasteEventCards[0].wordCount, 60);
+  assert.equal(result.value.pasteEventCards[0].replayFrameIndex, 1);
+  assert.ok(result.value.pasteEventCards[0].tagIds.length > 0);
+  assert.ok(result.value.timelineMarkers.some((item) => item.kind === "paste-event" && item.eventId === state.events[0].id));
+  assert.ok(result.value.timelineMarkers.some((item) => item.kind === "draft-start"));
+  assert.doesNotMatch(JSON.stringify({
+    cards: result.value.pasteEventCards,
+    markers: result.value.timelineMarkers
+  }), /suspicion|cheat|score/i);
 });

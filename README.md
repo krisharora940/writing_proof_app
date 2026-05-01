@@ -2,7 +2,7 @@
 
 Next.js prototype for a proof-of-process writing product.
 
-See [AGENTIC_WORKFLOW.md](AGENTIC_WORKFLOW.md) for the agent workflow to build this into a production app.
+See [AGENTIC_WORKFLOW.md](AGENTIC_WORKFLOW.md) for the agent workflow and [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) for the product/engineering roadmap.
 
 ## Run
 

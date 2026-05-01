@@ -69,6 +69,9 @@ test("schema separates mutable session state from immutable evidence", () => {
 test("schema supports authenticated identity and professor assignment access", () => {
   assert.match(schema, /create table if not exists auth_identities/);
   assert.match(schema, /unique \(provider, provider_subject\)/);
+  assert.match(schema, /create table if not exists auth_credentials/);
+  assert.match(schema, /password_hash text not null/);
+  assert.match(schema, /check \(position\('scrypt\$' in password_hash\) = 1\)/);
   assert.match(schema, /create table if not exists assignment_instructors/);
   assert.match(schema, /primary key \(assignment_id, professor_id\)/);
 });

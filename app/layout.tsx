@@ -3,8 +3,8 @@ import { EB_Garamond, Inter, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Verified Writing MVP",
-  description: "Proof-of-process writing prototype"
+  title: "AuthorCheck",
+  description: "Writing process evidence for students and professors"
 };
 
 const inter = Inter({

@@ -28,6 +28,17 @@ export type Observation = {
   detail: string;
 };
 
+export type SessionMetrics = {
+  totalEvents: number;
+  editEvents: number;
+  pasteEvents: number;
+  deletionEvents: number;
+  activeWritingMs: number;
+  finalWordCount: number;
+  firstEventAt: number | null;
+  lastEventAt: number | null;
+};
+
 export function getDiff(previous: string, next: string) {
   let start = 0;
   while (start < previous.length && start < next.length && previous[start] === next[start]) {
@@ -68,6 +79,21 @@ export function activeWritingMs(events: WritingEvent[]) {
     if (!["insert", "delete", "paste"].includes(event.type)) return total;
     return total + Math.min(event.durationSincePreviousMs || 0, 30_000);
   }, 0);
+}
+
+export function calculateSessionMetrics(events: WritingEvent[], currentText: string): SessionMetrics {
+  const orderedEvents = [...events].sort((a, b) => a.at - b.at);
+  const editEvents = orderedEvents.filter((event) => ["insert", "delete", "paste"].includes(event.type));
+  return {
+    totalEvents: orderedEvents.length,
+    editEvents: editEvents.length,
+    pasteEvents: orderedEvents.filter((event) => event.type === "paste").length,
+    deletionEvents: orderedEvents.filter((event) => event.type === "delete" || event.deletionEvent).length,
+    activeWritingMs: activeWritingMs(orderedEvents),
+    finalWordCount: countWords(currentText),
+    firstEventAt: orderedEvents[0]?.at ?? null,
+    lastEventAt: orderedEvents.at(-1)?.at ?? null
+  };
 }
 
 export function analyzeProcess(events: WritingEvent[], submittedText: string): Observation[] {

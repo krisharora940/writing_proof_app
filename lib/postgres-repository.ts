@@ -1,23 +1,30 @@
 import { createHash } from "node:crypto";
 import type {
   AppendWritingEventRequest,
+  AssignmentRosterResponse,
   AssignmentSubmissionListResponse,
+  CreateProfessorAssignmentBody,
+  CreateProfessorAssignmentResponse,
+  EnrollAssignmentStudentBody,
   LockSubmissionRequest,
+  RemoveAssignmentStudentBody,
   ProfessorAssignmentListResponse,
   ProfessorReportResponse,
   ReportExportResponse,
   ReplayResponse,
-  ResetSessionResponse,
+  SessionMetricsResponse,
   SummaryComparisonResponse,
+  StudentAssignmentListResponse,
   StudentSessionResponse,
   TimedSummaryRequest
 } from "./server-boundaries";
 import { evaluateSummaryComparison, writeAiEvaluationLog } from "./ai-evaluation.ts";
+import { generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
 import { createReportExport, type ReportExportFormat } from "./report-export.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
-import type { MutationResult, StoredTimedSummary } from "./server-repository";
+import { buildReportProcessHighlights, type MutationResult, type StoredTimedSummary } from "./server-repository.ts";
 import type { ReplayFrame } from "./replay";
-import type { Observation, Snapshot, WritingEvent } from "./writing-events";
+import { calculateSessionMetrics, type Observation, type Snapshot, type WritingEvent } from "./writing-events.ts";
 
 export type QueryResult<Row> = {
   rows: Row[];
@@ -26,6 +33,12 @@ export type QueryResult<Row> = {
 
 export type QueryClient = {
   query<Row = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<QueryResult<Row>>;
+};
+
+type TransactionClient = QueryClient & { release(): void };
+
+type ConnectableQueryClient = QueryClient & {
+  connect(): Promise<TransactionClient>;
 };
 
 type SessionRow = {
@@ -112,6 +125,7 @@ type AssignmentRow = {
   id: string;
   title: string;
   prompt: string;
+  due_at: Date | string | null;
   created_at: Date | string;
 };
 
@@ -120,30 +134,104 @@ type ActiveAssignmentRow = {
 };
 
 type SubmissionListRow = {
-  session_id: string;
+  session_id: string | null;
   student_id: string;
   student_name: string;
+  student_email: string;
   status: string;
   submitted_at: Date | string | null;
   locked_at: Date | string | null;
-  attempt_number: number;
+  attempt_number: number | null;
 };
+
+type RosterRow = {
+  student_id: string;
+  student_name: string;
+  student_email: string;
+  enrolled_at: Date | string;
+};
+
+type StudentAssignmentRow = {
+  assignment_id: string;
+  title: string;
+  prompt: string;
+  due_at: Date | string | null;
+  enrolled_at: Date | string;
+  session_id: string | null;
+  status: string;
+  submitted_at: Date | string | null;
+  locked_at: Date | string | null;
+  attempt_number: number | null;
+};
+
+export async function listStudentAssignmentsPostgres(
+  client: QueryClient,
+  studentId: string
+): Promise<MutationResult<StudentAssignmentListResponse>> {
+  const result = await client.query<StudentAssignmentRow>(
+    `select
+       assignments.id as assignment_id,
+       assignments.title,
+       assignments.prompt,
+       assignments.due_at,
+       assignment_students.created_at as enrolled_at,
+       latest_session.id as session_id,
+       coalesce(latest_session.status::text, 'not_started') as status,
+       latest_session.submitted_at,
+       latest_session.locked_at,
+       latest_session.attempt_number
+     from assignment_students
+     join assignments on assignments.id = assignment_students.assignment_id
+     left join lateral (
+       select id, status, submitted_at, locked_at, attempt_number
+       from writing_sessions
+       where writing_sessions.assignment_id = assignment_students.assignment_id
+         and writing_sessions.student_id = assignment_students.student_id
+         and writing_sessions.status <> 'archived'
+       order by attempt_number desc
+       limit 1
+     ) latest_session on true
+     where assignment_students.student_id = $1
+     order by assignments.due_at nulls last, assignments.created_at desc`,
+    [studentId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      assignments: result.rows.map((row) => ({
+        id: row.assignment_id,
+        title: row.title,
+        prompt: row.prompt,
+        dueAt: nullableTimeToMs(row.due_at),
+        enrolledAt: timeToMs(row.enrolled_at),
+        sessionId: row.session_id,
+        status: row.status,
+        submittedAt: nullableTimeToMs(row.submitted_at),
+        lockedAt: nullableTimeToMs(row.locked_at),
+        attemptNumber: row.attempt_number
+      }))
+    }
+  };
+}
 
 export async function getCurrentStudentSessionPostgres(
   client: QueryClient,
-  studentId: string
+  studentId: string,
+  assignmentId?: string
 ): Promise<MutationResult<StudentSessionResponse>> {
   const assignmentResult = await client.query<ActiveAssignmentRow>(
     `select assignment_id
      from assignment_students
      join assignments on assignments.id = assignment_students.assignment_id
      where assignment_students.student_id = $1
+       and ($2::uuid is null or assignment_students.assignment_id = $2::uuid)
      order by assignments.created_at desc
      limit 1`,
-    [studentId]
+    [studentId, assignmentId ?? null]
   );
-  const assignmentId = assignmentResult.rows[0]?.assignment_id;
-  if (!assignmentId) return { ok: false, status: 404, error: "No assignment found for this student." };
+  const selectedAssignmentId = assignmentResult.rows[0]?.assignment_id;
+  if (!selectedAssignmentId) return { ok: false, status: 404, error: "No assignment found for this student." };
 
   const existingSessionResult = await client.query<{ id: string }>(
     `select id
@@ -153,9 +241,9 @@ export async function getCurrentStudentSessionPostgres(
        and status <> 'archived'
      order by attempt_number desc
      limit 1`,
-    [assignmentId, studentId]
+    [selectedAssignmentId, studentId]
   );
-  const sessionId = existingSessionResult.rows[0]?.id || await createFirstAttemptPostgres(client, assignmentId, studentId);
+  const sessionId = existingSessionResult.rows[0]?.id || await createFirstAttemptPostgres(client, selectedAssignmentId, studentId);
   await ensureSessionState(client, sessionId);
 
   const detailResult = await client.query<StudentSessionRow>(
@@ -227,60 +315,12 @@ export async function getCurrentStudentSessionPostgres(
   };
 }
 
-export async function resetCurrentStudentSessionPostgres(
-  client: QueryClient,
-  studentId: string
-): Promise<MutationResult<ResetSessionResponse>> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const assignmentResult = await client.query<{ assignment_id: string; next_attempt: number }>(
-      `select
-         assignment_students.assignment_id,
-         coalesce(max(writing_sessions.attempt_number), 0) + 1 as next_attempt
-       from assignment_students
-       join assignments on assignments.id = assignment_students.assignment_id
-       left join writing_sessions
-         on writing_sessions.assignment_id = assignment_students.assignment_id
-        and writing_sessions.student_id = assignment_students.student_id
-       where assignment_students.student_id = $1
-       group by assignment_students.assignment_id, assignments.created_at
-       order by assignments.created_at desc
-       limit 1`,
-      [studentId]
-    );
-    const row = assignmentResult.rows[0];
-    if (!row) return { ok: false, status: 404, error: "No assignment found for this student." };
-
-    const sessionResult = await client.query<{ id: string; attempt_number: number }>(
-      `insert into writing_sessions (assignment_id, student_id, attempt_number, status)
-       values ($1, $2, $3, 'draft')
-       on conflict (assignment_id, student_id, attempt_number) do nothing
-       returning id, attempt_number`,
-      [row.assignment_id, studentId, Number(row.next_attempt)]
-    );
-    const session = sessionResult.rows[0];
-    if (!session) continue;
-
-    await ensureSessionState(client, session.id);
-
-    return {
-      ok: true,
-      value: {
-        sessionId: session.id,
-        assignmentId: row.assignment_id,
-        attemptNumber: session.attempt_number
-      }
-    };
-  }
-
-  return { ok: false, status: 409, error: "Could not create a new attempt. Please retry." };
-}
-
 export async function listProfessorAssignmentsPostgres(
   client: QueryClient,
   professorId: string
 ): Promise<MutationResult<ProfessorAssignmentListResponse>> {
   const result = await client.query<AssignmentRow>(
-    `select assignments.id, assignments.title, assignments.prompt, assignments.created_at
+    `select assignments.id, assignments.title, assignments.prompt, assignments.due_at, assignments.created_at
      from assignments
      join assignment_instructors on assignment_instructors.assignment_id = assignments.id
      where assignment_instructors.professor_id = $1
@@ -295,10 +335,181 @@ export async function listProfessorAssignmentsPostgres(
         id: row.id,
         title: row.title,
         prompt: row.prompt,
+        dueAt: nullableTimeToMs(row.due_at),
         createdAt: timeToMs(row.created_at)
       }))
     }
   };
+}
+
+export async function createProfessorAssignmentPostgres(
+  client: QueryClient,
+  professorId: string,
+  body: CreateProfessorAssignmentBody
+): Promise<MutationResult<CreateProfessorAssignmentResponse>> {
+  const title = body.title.trim();
+  const prompt = body.prompt.trim();
+  if (!title || !prompt) return { ok: false, status: 400, error: "Assignment title and prompt are required." };
+  if (body.dueAt !== null && body.dueAt !== undefined && !Number.isFinite(body.dueAt)) {
+    return { ok: false, status: 400, error: "Due date is invalid." };
+  }
+
+  await client.query("begin");
+  try {
+    const assignmentResult = await client.query<AssignmentRow>(
+      `insert into assignments (professor_id, title, prompt, due_at)
+       values ($1, $2, $3, case when $4::double precision is null then null else to_timestamp($4 / 1000.0) end)
+       returning id, title, prompt, due_at, created_at`,
+      [professorId, title, prompt, body.dueAt ?? null]
+    );
+    const assignment = assignmentResult.rows[0];
+    await client.query(
+      `insert into assignment_instructors (assignment_id, professor_id, role)
+       values ($1, $2, 'owner')
+       on conflict (assignment_id, professor_id) do nothing`,
+      [assignment.id, professorId]
+    );
+    await client.query("commit");
+
+    return {
+      ok: true,
+      value: {
+        assignment: {
+          id: assignment.id,
+          title: assignment.title,
+          prompt: assignment.prompt,
+          dueAt: nullableTimeToMs(assignment.due_at),
+          createdAt: timeToMs(assignment.created_at)
+        }
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function listAssignmentRosterPostgres(
+  client: QueryClient,
+  assignmentId: string,
+  professorId: string
+): Promise<MutationResult<AssignmentRosterResponse>> {
+  const access = await requireProfessorAssignmentAccess(client, assignmentId, professorId);
+  if (!access.ok) return access;
+
+  const result = await client.query<RosterRow>(
+    `select
+       app_users.id as student_id,
+       app_users.display_name as student_name,
+       app_users.email as student_email,
+       assignment_students.created_at as enrolled_at
+     from assignment_students
+     join app_users on app_users.id = assignment_students.student_id
+     where assignment_students.assignment_id = $1
+     order by app_users.display_name, app_users.email`,
+    [assignmentId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      students: result.rows.map((row) => ({
+        studentId: row.student_id,
+        studentName: row.student_name,
+        studentEmail: row.student_email,
+        enrolledAt: timeToMs(row.enrolled_at)
+      }))
+    }
+  };
+}
+
+export async function enrollAssignmentStudentPostgres(
+  client: QueryClient,
+  assignmentId: string,
+  professorId: string,
+  body: EnrollAssignmentStudentBody
+): Promise<MutationResult<AssignmentRosterResponse["students"][number]>> {
+  const email = body.email.trim().toLowerCase();
+  const displayName = body.displayName.trim();
+  if (!email || !displayName) return { ok: false, status: 400, error: "Student name and email are required." };
+  if (!email.includes("@")) return { ok: false, status: 400, error: "Student email is invalid." };
+
+  await client.query("begin");
+  try {
+    const access = await requireProfessorAssignmentAccess(client, assignmentId, professorId);
+    if (!access.ok) {
+      await client.query("rollback");
+      return access;
+    }
+
+    const existingUserResult = await client.query<{ id: string; role: string; display_name: string; email: string }>(
+      "select id, role, display_name, email from app_users where email = $1 for update",
+      [email]
+    );
+    let student = existingUserResult.rows[0];
+    if (student && student.role !== "student") {
+      await client.query("rollback");
+      return { ok: false, status: 409, error: "Only student accounts can be enrolled." };
+    }
+
+    if (!student) {
+      const insertUserResult = await client.query<{ id: string; display_name: string; email: string }>(
+        `insert into app_users (email, display_name, role)
+         values ($1, $2, 'student')
+         returning id, display_name, email`,
+        [email, displayName]
+      );
+      student = { ...insertUserResult.rows[0], role: "student" };
+    }
+
+    const enrollmentResult = await client.query<{ created_at: Date | string }>(
+      `insert into assignment_students (assignment_id, student_id)
+       values ($1, $2)
+       on conflict (assignment_id, student_id) do nothing
+       returning created_at`,
+      [assignmentId, student.id]
+    );
+    const enrollment = enrollmentResult.rows[0];
+    if (!enrollment) {
+      await client.query("rollback");
+      return { ok: false, status: 409, error: "Student is already enrolled." };
+    }
+
+    await client.query("commit");
+    return {
+      ok: true,
+      value: {
+        studentId: student.id,
+        studentName: student.display_name,
+        studentEmail: student.email,
+        enrolledAt: timeToMs(enrollment.created_at)
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function removeAssignmentStudentPostgres(
+  client: QueryClient,
+  assignmentId: string,
+  professorId: string,
+  body: RemoveAssignmentStudentBody
+): Promise<MutationResult<{ studentId: string }>> {
+  if (!body.studentId) return { ok: false, status: 400, error: "Student id is required." };
+  const access = await requireProfessorAssignmentAccess(client, assignmentId, professorId);
+  if (!access.ok) return access;
+
+  const result = await client.query<{ student_id: string }>(
+    `delete from assignment_students
+     where assignment_id = $1 and student_id = $2
+     returning student_id`,
+    [assignmentId, body.studentId]
+  );
+  const removed = result.rows[0];
+  if (!removed) return { ok: false, status: 404, error: "Student enrollment not found." };
+  return { ok: true, value: { studentId: removed.student_id } };
 }
 
 export async function listAssignmentSubmissionsPostgres(
@@ -306,27 +517,32 @@ export async function listAssignmentSubmissionsPostgres(
   assignmentId: string,
   professorId: string
 ): Promise<MutationResult<AssignmentSubmissionListResponse>> {
-  const access = await client.query<{ id: string }>(
-    `select assignment_id as id
-     from assignment_instructors
-     where assignment_id = $1 and professor_id = $2`,
-    [assignmentId, professorId]
-  );
-  if (!access.rows[0]) return { ok: false, status: 403, error: "Professor cannot access this assignment." };
+  const access = await requireProfessorAssignmentAccess(client, assignmentId, professorId);
+  if (!access.ok) return access;
 
   const result = await client.query<SubmissionListRow>(
     `select
-       writing_sessions.id as session_id,
-       writing_sessions.student_id,
+       latest_session.id as session_id,
+       app_users.id as student_id,
        app_users.display_name as student_name,
-       writing_sessions.status,
-       writing_sessions.submitted_at,
-       writing_sessions.locked_at,
-       writing_sessions.attempt_number
-     from writing_sessions
-     join app_users on app_users.id = writing_sessions.student_id
-     where writing_sessions.assignment_id = $1
-     order by app_users.display_name, writing_sessions.attempt_number desc`,
+       app_users.email as student_email,
+       coalesce(latest_session.status::text, 'not_started') as status,
+       latest_session.submitted_at,
+       latest_session.locked_at,
+       latest_session.attempt_number
+     from assignment_students
+     join app_users on app_users.id = assignment_students.student_id
+     left join lateral (
+       select id, status, submitted_at, locked_at, attempt_number
+       from writing_sessions
+       where writing_sessions.assignment_id = assignment_students.assignment_id
+         and writing_sessions.student_id = assignment_students.student_id
+         and writing_sessions.status <> 'archived'
+       order by attempt_number desc
+       limit 1
+     ) latest_session on true
+     where assignment_students.assignment_id = $1
+     order by app_users.display_name, app_users.email`,
     [assignmentId]
   );
 
@@ -337,6 +553,7 @@ export async function listAssignmentSubmissionsPostgres(
         sessionId: row.session_id,
         studentId: row.student_id,
         studentName: row.student_name,
+        studentEmail: row.student_email,
         status: row.status,
         submittedAt: nullableTimeToMs(row.submitted_at),
         lockedAt: nullableTimeToMs(row.locked_at),
@@ -347,6 +564,13 @@ export async function listAssignmentSubmissionsPostgres(
 }
 
 export async function appendWritingEventPostgres(
+  client: QueryClient,
+  request: AppendWritingEventRequest
+): Promise<MutationResult<{ event: WritingEvent; eventIndex: number }>> {
+  return withTransaction(client, (tx) => appendWritingEventPostgresInTransaction(tx, request));
+}
+
+async function appendWritingEventPostgresInTransaction(
   client: QueryClient,
   request: AppendWritingEventRequest
 ): Promise<MutationResult<{ event: WritingEvent; eventIndex: number }>> {
@@ -415,6 +639,13 @@ export async function lockSubmissionPostgres(
   client: QueryClient,
   request: LockSubmissionRequest
 ): Promise<MutationResult<{ submittedAt: number; lockedAt: number; snapshotIndex: number }>> {
+  return withTransaction(client, (tx) => lockSubmissionPostgresInTransaction(tx, request));
+}
+
+async function lockSubmissionPostgresInTransaction(
+  client: QueryClient,
+  request: LockSubmissionRequest
+): Promise<MutationResult<{ submittedAt: number; lockedAt: number; snapshotIndex: number }>> {
   const sessionResult = await lockSessionForStudent(client, request.sessionId, request.studentId);
   const session = sessionResult.rows[0];
   if (!session) return { ok: false, status: 404, error: "Writing session not found." };
@@ -479,6 +710,13 @@ export async function lockSubmissionPostgres(
 }
 
 export async function storeTimedSummaryPostgres(
+  client: QueryClient,
+  request: TimedSummaryRequest
+): Promise<MutationResult<StoredTimedSummary>> {
+  return withTransaction(client, (tx) => storeTimedSummaryPostgresInTransaction(tx, request));
+}
+
+async function storeTimedSummaryPostgresInTransaction(
   client: QueryClient,
   request: TimedSummaryRequest
 ): Promise<MutationResult<StoredTimedSummary>> {
@@ -602,6 +840,48 @@ export async function getReplayPostgres(
   };
 }
 
+export async function getSessionMetricsPostgres(
+  client: QueryClient,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+): Promise<MutationResult<SessionMetricsResponse>> {
+  const access = await getSessionAccessPostgres(client, sessionId, user);
+  if (!access) return { ok: false, status: 404, error: "Session metrics not found." };
+
+  const eventsResult = await client.query<ReportEventRow>(
+    `select
+       id,
+       type,
+       occurred_at,
+       input_type,
+       start_offset,
+       removed,
+       added,
+       removed_characters,
+       added_words,
+       removed_words,
+       duration_since_previous_ms,
+       paste_words,
+       deletion_event,
+       words
+     from writing_events
+     where session_id = $1
+     order by event_index`,
+    [sessionId]
+  );
+  const textResult = await client.query<{ current_text: string }>(
+    "select current_text from writing_session_state where session_id = $1",
+    [sessionId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      metrics: calculateSessionMetrics(eventsResult.rows.map(mapEventRow), textResult.rows[0]?.current_text || "")
+    }
+  };
+}
+
 export async function getSummaryComparisonPostgres(
   client: QueryClient,
   sessionId: string,
@@ -698,11 +978,21 @@ export async function getProfessorReportPostgres(
   );
   const existingObservations = normalizeStoredObservations(existingReportResult.rows[0]?.observations);
   if (existingObservations) {
+    const existingTags = submittedText
+      ? [
+        ...generateProcessEvidenceTags(events, submittedText),
+        ...(summaryText ? generateSummaryEvidenceTags(compareSummaryToPaper(submittedText, summaryText)) : []),
+        ...generateObservationEvidenceTags(existingObservations)
+      ]
+      : generateObservationEvidenceTags(existingObservations);
+    const highlights = buildReportProcessHighlights(events, frames, existingTags);
     return {
       ok: true,
       value: {
         observations: existingObservations,
+        tags: existingTags,
         frames,
+        ...highlights,
         submittedText,
         summaryText
       }
@@ -710,20 +1000,26 @@ export async function getProfessorReportPostgres(
   }
 
   const observations = submittedText ? analyzeProcessForReport(events, submittedText) : [];
+  const tags = submittedText ? generateProcessEvidenceTags(events, submittedText) : [];
   let audit = null;
   if (submittedText && summaryText) {
     const evaluation = await evaluateSummaryComparison(sessionId, submittedText, summaryText);
     observations.push(...comparisonToObservations(evaluation.comparison));
+    tags.push(...generateSummaryEvidenceTags(evaluation.comparison));
     audit = evaluation.audit;
   }
+  tags.push(...generateObservationEvidenceTags(observations));
   const reportId = await createProfessorReportPostgres(client, sessionId, professorId, observations, frames.length);
   if (audit) await writeAiEvaluationLog(client, sessionId, reportId, audit);
+  const highlights = buildReportProcessHighlights(events, frames, tags);
 
   return {
     ok: true,
     value: {
       observations,
+      tags,
       frames,
+      ...highlights,
       submittedText,
       summaryText
     }
@@ -753,6 +1049,45 @@ export async function exportProfessorReportPostgres(
   );
 
   return { ok: true, value: createReportExport(report.value, format, sessionId) };
+}
+
+async function withTransaction<T>(
+  client: QueryClient,
+  callback: (transactionClient: QueryClient) => Promise<T>
+) {
+  if (!isConnectableQueryClient(client)) return callback(client);
+
+  const transactionClient = await client.connect();
+  try {
+    await transactionClient.query("begin");
+    const result = await callback(transactionClient);
+    await transactionClient.query("commit");
+    return result;
+  } catch (error) {
+    await transactionClient.query("rollback");
+    throw error;
+  } finally {
+    transactionClient.release();
+  }
+}
+
+function isConnectableQueryClient(client: QueryClient): client is ConnectableQueryClient {
+  return typeof (client as { connect?: unknown }).connect === "function";
+}
+
+async function requireProfessorAssignmentAccess(
+  client: QueryClient,
+  assignmentId: string,
+  professorId: string
+): Promise<MutationResult<{ id: string }>> {
+  const access = await client.query<{ id: string }>(
+    `select assignment_id as id
+     from assignment_instructors
+     where assignment_id = $1 and professor_id = $2`,
+    [assignmentId, professorId]
+  );
+  if (!access.rows[0]) return { ok: false, status: 403, error: "Professor cannot access this assignment." };
+  return { ok: true, value: access.rows[0] };
 }
 
 async function lockSessionForStudent(client: QueryClient, sessionId: string, studentId: string) {

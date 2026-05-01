@@ -17,7 +17,7 @@ The platform should not use AI prose-origin detection.
 
 The uploaded spec includes a `Behavioral Integrity Score`.
 
-Earlier product direction in this repo rejects final scores or accusatory connotation. To stay aligned with that direction, the implementation should treat behavioral scoring rules as an internal prioritization and reporting system, not as a professor-facing final score.
+Earlier product direction in this repo rejects final scores or accusatory connotation. To stay aligned with that direction, replace behavioral scoring with factual evidence tags.
 
 Preferred professor-facing model:
 
@@ -25,6 +25,8 @@ Preferred professor-facing model:
 - show component-level evidence
 - avoid a single integrity/suspicion/cheating score
 - allow instructor interpretation
+
+Deletion events, idle time, and revision bursts are normal writing behaviors. They should be captured as context, not treated as inherently suspicious. More advanced interpretation, including patterns such as unusually linear typing, belongs in later versions after the MVP has reliable capture, storage, replay, and reporting.
 
 ## Current MVP Coverage
 
@@ -79,7 +81,7 @@ These features should be implemented because they improve the evidence review wo
 - playback speed controls from slow review to fast scan
 - replay auto-pause at notable events
 - expandable observation cards with underlying metrics
-- separate views for observations, replay, and flagged/notable events
+- separate views for observations, replay, and tagged/notable evidence
 
 ### Clarity Features To Avoid
 
@@ -112,11 +114,11 @@ Add these to the product backlog:
 - Show timeline sections as `Session 1`, `Session 2`, etc.
 - Add `Saved`, `Saving...`, and `Save failed` states to the editor.
 - Add replay speeds: `0.25x`, `0.5x`, `1x`, `2x`, `5x`, and `10x`.
-- Add replay markers for paste events, deletion bursts, idle gaps, tab switches, and submission.
+- Add replay markers for paste events, revision bursts, idle gaps, tab switches, and submission.
 - During replay, optionally auto-pause at notable events.
 - Add paste cards that jump replay to the exact document state when selected.
 - Track active writing time as active interaction time, excluding idle time and passive scrolling.
-- Keep all event cards factual, e.g. `Large paste event`, `Text unchanged after paste`, `Idle gap`, `Deletion burst`.
+- Keep all event cards factual, e.g. `Large paste event`, `Text unchanged after paste`, `Idle gap`, `Revision burst`.
 
 ## Recommended Next Slice
 

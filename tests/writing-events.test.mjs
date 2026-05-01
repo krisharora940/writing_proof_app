@@ -5,6 +5,7 @@ import {
   activeWritingMs,
   analyzeComprehension,
   analyzeProcess,
+  calculateSessionMetrics,
   countWords,
   formatDuration,
   getDiff
@@ -55,6 +56,26 @@ test("activeWritingMs includes writing events, caps idle gaps, and ignores submi
   ];
 
   assert.equal(activeWritingMs(events), 40_000);
+});
+
+test("calculateSessionMetrics summarizes persisted process events", () => {
+  const events = [
+    { id: "1", type: "insert", at, durationSincePreviousMs: 8_000, addedWords: 2 },
+    { id: "2", type: "paste", at: at + 2, durationSincePreviousMs: 60_000, pasteWords: 25 },
+    { id: "3", type: "delete", at: at + 4, durationSincePreviousMs: 5_000, removedCharacters: 12, deletionEvent: true },
+    { id: "4", type: "submit", at: at + 6, words: 30 }
+  ];
+
+  assert.deepEqual(calculateSessionMetrics(events, "one two three four"), {
+    totalEvents: 4,
+    editEvents: 3,
+    pasteEvents: 1,
+    deletionEvents: 1,
+    activeWritingMs: 43_000,
+    finalWordCount: 4,
+    firstEventAt: at,
+    lastEventAt: at + 6
+  });
 });
 
 test("analyzeProcess flags large paste events and low active writing time", () => {
