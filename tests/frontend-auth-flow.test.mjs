@@ -79,6 +79,9 @@ test("professor dashboard follows assignment to submission to report flow", () =
   assert.match(pageSource, /id="tag-category"/);
   assert.match(pageSource, /id="tag-sort"/);
   assert.match(pageSource, /sortedEvidenceTags/);
+  assert.match(pageSource, /Paste Event Review/);
+  assert.match(pageSource, /timelineMarkers\.map/);
+  assert.match(pageSource, /pasteEventCards\.map/);
   assert.match(pageSource, /Submitted Paper/);
   assert.match(pageSource, /Comprehension Check/);
 });

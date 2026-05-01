@@ -9,6 +9,29 @@ const report = {
     title: "Summary coverage",
     detail: "The timed summary mentions process evidence."
   }],
+  tags: [],
+  pasteEventCards: [{
+    id: "paste-card-1",
+    eventId: "event-1",
+    at: 1000,
+    title: "Paste event",
+    detail: "12 words were inserted through paste input.",
+    wordCount: 12,
+    characterCount: 72,
+    textPreview: "Pasted text preview",
+    tagIds: [],
+    replayFrameIndex: 1
+  }],
+  timelineMarkers: [{
+    id: "timeline-paste-1",
+    eventId: "event-1",
+    at: 1000,
+    kind: "paste-event",
+    label: "Paste input",
+    detail: "12 words were inserted through paste input.",
+    tagIds: [],
+    replayFrameIndex: 1
+  }],
   frames: [],
   submittedText: "Process evidence supports fair review.",
   summaryText: "The summary mentions process evidence."
@@ -25,11 +48,15 @@ test("createReportExport creates html, csv, and pdf payloads", () => {
   const html = createReportExport(report, "html", "session-1");
   assert.equal(html.contentType, "text/html; charset=utf-8");
   assert.match(String(html.body), /Neutral Evidence Report/);
+  assert.match(String(html.body), /Paste Event Cards/);
+  assert.match(String(html.body), /Timeline Markers/);
   assert.equal(html.filename, "writing-report-session-1.html");
 
   const csv = createReportExport(report, "csv", "session-1");
   assert.equal(csv.contentType, "text/csv; charset=utf-8");
   assert.match(String(csv.body), /"section","group","title","detail"/);
+  assert.match(String(csv.body), /"paste_card"/);
+  assert.match(String(csv.body), /"timeline_marker"/);
 
   const pdf = createReportExport(report, "pdf", "session-1");
   assert.equal(pdf.contentType, "application/pdf");

@@ -39,9 +39,13 @@ export function createReportExport(report: ProfessorReportResponse, format: Repo
 
 function createCsv(report: ProfessorReportResponse) {
   const tags = report.tags || [];
+  const pasteCards = report.pasteEventCards || [];
+  const markers = report.timelineMarkers || [];
   const rows = [
     ["section", "group", "title", "detail"],
     ...tags.map((item) => ["tag", item.category, item.label, item.detail]),
+    ...pasteCards.map((item) => ["paste_card", `${item.wordCount} words`, item.title, item.detail]),
+    ...markers.map((item) => ["timeline_marker", item.kind, item.label, item.detail]),
     ...report.observations.map((item) => ["observation", item.group, item.title, item.detail]),
     ["submitted_text", "", "", report.submittedText],
     ["timed_summary", "", "", report.summaryText]
@@ -54,6 +58,12 @@ function createHtml(report: ProfessorReportResponse) {
   const tags = (report.tags || []).map((item) => (
     `<article><p>${escapeHtml(item.category)}</p><h2>${escapeHtml(item.label)}</h2><p>${escapeHtml(item.detail)}</p></article>`
   )).join("");
+  const pasteCards = (report.pasteEventCards || []).map((item) => (
+    `<article><p>Paste Card</p><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.detail)}</p><pre>${escapeHtml(item.textPreview)}</pre></article>`
+  )).join("");
+  const markers = (report.timelineMarkers || []).map((item) => (
+    `<article><p>${escapeHtml(item.kind)}</p><h2>${escapeHtml(item.label)}</h2><p>${escapeHtml(item.detail)}</p></article>`
+  )).join("");
   const observations = report.observations.map((item) => (
     `<article><p>${escapeHtml(item.group)}</p><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.detail)}</p></article>`
   )).join("");
@@ -65,6 +75,10 @@ function createHtml(report: ProfessorReportResponse) {
     "</head><body><h1>Neutral Evidence Report</h1>",
     "<h2>Evidence Tags</h2>",
     tags || "<p>No evidence tags available.</p>",
+    "<h2>Paste Event Cards</h2>",
+    pasteCards || "<p>No paste events recorded.</p>",
+    "<h2>Timeline Markers</h2>",
+    markers || "<p>No timeline markers available.</p>",
     "<h2>Observations</h2>",
     observations || "<p>No observations available.</p>",
     "<h2>Submitted Text</h2>",
@@ -82,6 +96,19 @@ function createPdf(report: ProfessorReportResponse) {
     "Evidence Tags",
     ...(report.tags || []).flatMap((item) => [
       `${item.category}: ${item.label}`,
+      item.detail,
+      ""
+    ]),
+    "Paste Event Cards",
+    ...(report.pasteEventCards || []).flatMap((item) => [
+      `${item.title}: ${item.wordCount} words`,
+      item.detail,
+      item.textPreview,
+      ""
+    ]),
+    "Timeline Markers",
+    ...(report.timelineMarkers || []).flatMap((item) => [
+      `${item.kind}: ${item.label}`,
       item.detail,
       ""
     ]),
