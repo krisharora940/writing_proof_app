@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse } from "next/server.js";
+import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { getProfessorReportPostgres } from "@/lib/postgres-repository";
+import { rateLimit } from "@/lib/rate-limit";
 import { getDemoRepositoryState, getProfessorReportDemo } from "@/lib/server-repository";
 
 type RouteContext = {
@@ -8,16 +10,17 @@ type RouteContext = {
 };
 
 export async function GET(request: Request, context: RouteContext) {
+  const limited = rateLimit(request, "report-read", { limit: 60, windowMs: 60_000 });
+  if (limited) return limited;
+
+  const user = await getAuthenticatedUser(request);
+  if (!user) return unauthorized();
+  if (user.role !== "professor") return forbidden("Only professors can load reports.");
+
   const { sessionId } = await context.params;
-  const professorId = new URL(request.url).searchParams.get("professorId");
-
-  if (!professorId) {
-    return NextResponse.json({ error: "Missing professorId" }, { status: 400 });
-  }
-
   const result = hasDatabaseUrl()
-    ? await getProfessorReportPostgres(getDatabaseClient(), sessionId, professorId)
-    : getProfessorReportDemo(getDemoRepositoryState(), sessionId, professorId);
+    ? await getProfessorReportPostgres(getDatabaseClient(), sessionId, user.id)
+    : getProfessorReportDemo(getDemoRepositoryState(), sessionId, user.id);
 
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
 

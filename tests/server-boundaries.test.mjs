@@ -17,7 +17,8 @@ test("API boundaries cover student writes and professor review reads", () => {
     "/api/timed-summaries",
     "/api/replay",
     "/api/summary-comparison",
-    "/api/reports/:sessionId"
+    "/api/reports/:sessionId",
+    "/api/reports/:sessionId/export"
   ].forEach((path) => {
     assert.ok(paths.includes(path));
   });

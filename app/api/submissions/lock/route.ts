@@ -1,31 +1,39 @@
-import { NextResponse } from "next/server";
+import { NextResponse } from "next/server.js";
+import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { lockSubmissionPostgres } from "@/lib/postgres-repository";
 import { getDemoRepositoryState, lockSubmission } from "@/lib/server-repository";
-import type { LockSubmissionRequest } from "@/lib/server-boundaries";
+import type { LockSubmissionBody } from "@/lib/server-boundaries";
 
 export async function POST(request: Request) {
+  const user = await getAuthenticatedUser(request);
+  if (!user) return unauthorized();
+  if (user.role !== "student") return forbidden("Only students can lock submissions.");
+
   const body = await request.json().catch(() => null);
 
   if (!isLockSubmissionRequest(body)) {
     return NextResponse.json({ error: "Invalid submission lock request" }, { status: 400 });
   }
 
+  const lockRequest = {
+    ...body,
+    studentId: user.id
+  };
   const result = hasDatabaseUrl()
-    ? await lockSubmissionPostgres(getDatabaseClient(), body)
-    : lockSubmission(getDemoRepositoryState(), body);
+    ? await lockSubmissionPostgres(getDatabaseClient(), lockRequest)
+    : lockSubmission(getDemoRepositoryState(), lockRequest);
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
 
   return NextResponse.json(result.value);
 }
 
-function isLockSubmissionRequest(value: unknown): value is LockSubmissionRequest {
+function isLockSubmissionRequest(value: unknown): value is LockSubmissionBody {
   if (!value || typeof value !== "object") return false;
-  const body = value as Partial<LockSubmissionRequest>;
+  const body = value as Partial<LockSubmissionBody>;
 
   return (
     typeof body.sessionId === "string" &&
-    typeof body.studentId === "string" &&
     typeof body.submittedText === "string" &&
     !!body.snapshot &&
     typeof body.snapshot === "object" &&

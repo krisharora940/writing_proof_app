@@ -5,6 +5,7 @@ import {
   appendWritingEvent,
   createDemoRepositoryState,
   getProfessorReportDemo,
+  resetCurrentStudentSessionDemo,
   lockSubmission,
   storeTimedSummary
 } from "../lib/server-repository.ts";
@@ -171,4 +172,21 @@ test("getProfessorReportDemo returns report data for the owning professor", () =
   assert.equal(result.value.submittedText, "Process evidence supports revision");
   assert.ok(result.value.observations.some((item) => item.group === "Comprehension Check"));
   assert.equal(result.value.frames.length, 2);
+});
+
+test("resetCurrentStudentSessionDemo creates a new attempt without keeping old draft state", () => {
+  const state = createDemoRepositoryState(1000);
+  appendWritingEvent(state, {
+    sessionId: DEMO_SESSION_ID,
+    studentId: DEMO_STUDENT_ID,
+    event: { type: "insert", at: 1100, start: 0, removed: "", added: "Draft", addedWords: 1 }
+  });
+
+  const result = resetCurrentStudentSessionDemo(state, DEMO_STUDENT_ID);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.attemptNumber, 2);
+  assert.equal(state.draftText, "");
+  assert.equal(state.events.length, 0);
+  assert.equal(state.session.lockedAt, null);
 });

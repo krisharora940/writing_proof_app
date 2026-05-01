@@ -1,10 +1,20 @@
 import { createHash } from "node:crypto";
 import type {
   AppendWritingEventRequest,
+  AssignmentSubmissionListResponse,
   LockSubmissionRequest,
+  ProfessorAssignmentListResponse,
   ProfessorReportResponse,
+  ReportExportResponse,
+  ReplayResponse,
+  ResetSessionResponse,
+  SummaryComparisonResponse,
+  StudentSessionResponse,
   TimedSummaryRequest
 } from "./server-boundaries";
+import { evaluateSummaryComparison, writeAiEvaluationLog } from "./ai-evaluation.ts";
+import { createReportExport, type ReportExportFormat } from "./report-export.ts";
+import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import type { MutationResult, StoredTimedSummary } from "./server-repository";
 import type { ReplayFrame } from "./replay";
 import type { Observation, Snapshot, WritingEvent } from "./writing-events";
@@ -35,12 +45,32 @@ type SnapshotIndexRow = {
   snapshot_index: number;
 };
 
+type SnapshotInsertRow = {
+  id: string;
+  snapshot_index: number;
+};
+
 type SummaryRow = {
   id: string;
   session_id: string;
   started_at: Date | string;
   completed_at: Date | string;
   summary_text: string;
+};
+
+type StudentSessionRow = {
+  assignment_id: string;
+  title: string;
+  prompt: string;
+  session_id: string;
+  student_id: string;
+  submitted_at: Date | string | null;
+  locked_at: Date | string | null;
+  status: string;
+  attempt_number: number;
+  current_text: string | null;
+  summary_text: string | null;
+  summary_completed_at: Date | string | null;
 };
 
 type SessionStateRow = {
@@ -73,6 +103,248 @@ type ReportSnapshotRow = {
 type ReportSummaryRow = {
   summary_text: string;
 };
+
+type ExistingReportRow = {
+  observations: unknown;
+};
+
+type AssignmentRow = {
+  id: string;
+  title: string;
+  prompt: string;
+  created_at: Date | string;
+};
+
+type ActiveAssignmentRow = {
+  assignment_id: string;
+};
+
+type SubmissionListRow = {
+  session_id: string;
+  student_id: string;
+  student_name: string;
+  status: string;
+  submitted_at: Date | string | null;
+  locked_at: Date | string | null;
+  attempt_number: number;
+};
+
+export async function getCurrentStudentSessionPostgres(
+  client: QueryClient,
+  studentId: string
+): Promise<MutationResult<StudentSessionResponse>> {
+  const assignmentResult = await client.query<ActiveAssignmentRow>(
+    `select assignment_id
+     from assignment_students
+     join assignments on assignments.id = assignment_students.assignment_id
+     where assignment_students.student_id = $1
+     order by assignments.created_at desc
+     limit 1`,
+    [studentId]
+  );
+  const assignmentId = assignmentResult.rows[0]?.assignment_id;
+  if (!assignmentId) return { ok: false, status: 404, error: "No assignment found for this student." };
+
+  const existingSessionResult = await client.query<{ id: string }>(
+    `select id
+     from writing_sessions
+     where assignment_id = $1
+       and student_id = $2
+       and status <> 'archived'
+     order by attempt_number desc
+     limit 1`,
+    [assignmentId, studentId]
+  );
+  const sessionId = existingSessionResult.rows[0]?.id || await createFirstAttemptPostgres(client, assignmentId, studentId);
+  await ensureSessionState(client, sessionId);
+
+  const detailResult = await client.query<StudentSessionRow>(
+    `select
+       assignments.id as assignment_id,
+       assignments.title,
+       assignments.prompt,
+       writing_sessions.id as session_id,
+       writing_sessions.student_id,
+       writing_sessions.submitted_at,
+       writing_sessions.locked_at,
+       writing_sessions.status,
+       writing_sessions.attempt_number,
+       writing_session_state.current_text,
+       timed_summaries.summary_text,
+       timed_summaries.completed_at as summary_completed_at
+     from writing_sessions
+     join assignments on assignments.id = writing_sessions.assignment_id
+     left join writing_session_state on writing_session_state.session_id = writing_sessions.id
+     left join timed_summaries on timed_summaries.session_id = writing_sessions.id
+     where writing_sessions.id = $1 and writing_sessions.student_id = $2`,
+    [sessionId, studentId]
+  );
+  const row = detailResult.rows[0];
+  if (!row) return { ok: false, status: 404, error: "Writing session not found." };
+
+  const eventsResult = await client.query<ReportEventRow>(
+    `select id, type, occurred_at, input_type, start_offset, removed, added, removed_characters,
+            added_words, removed_words, duration_since_previous_ms, paste_words, deletion_event, words
+     from writing_events
+     where session_id = $1
+     order by event_index`,
+    [row.session_id]
+  );
+  const snapshotsResult = await client.query<ReportSnapshotRow>(
+    `select captured_at, text
+     from submission_snapshots
+     where session_id = $1
+     order by snapshot_index`,
+    [row.session_id]
+  );
+  const snapshots = snapshotsResult.rows.map(mapSnapshotRow);
+  const submittedText = row.locked_at ? snapshots.at(-1)?.text || "" : "";
+
+  return {
+    ok: true,
+    value: {
+      assignment: {
+        id: row.assignment_id,
+        title: row.title,
+        prompt: row.prompt
+      },
+      session: {
+        id: row.session_id,
+        assignmentId: row.assignment_id,
+        studentId: row.student_id,
+        submittedAt: nullableTimeToMs(row.submitted_at),
+        lockedAt: nullableTimeToMs(row.locked_at),
+        status: row.status,
+        attemptNumber: row.attempt_number
+      },
+      paperText: row.current_text || "",
+      submittedText,
+      summaryText: row.summary_text || "",
+      summaryCompletedAt: nullableTimeToMs(row.summary_completed_at),
+      events: eventsResult.rows.map(mapEventRow),
+      snapshots
+    }
+  };
+}
+
+export async function resetCurrentStudentSessionPostgres(
+  client: QueryClient,
+  studentId: string
+): Promise<MutationResult<ResetSessionResponse>> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const assignmentResult = await client.query<{ assignment_id: string; next_attempt: number }>(
+      `select
+         assignment_students.assignment_id,
+         coalesce(max(writing_sessions.attempt_number), 0) + 1 as next_attempt
+       from assignment_students
+       join assignments on assignments.id = assignment_students.assignment_id
+       left join writing_sessions
+         on writing_sessions.assignment_id = assignment_students.assignment_id
+        and writing_sessions.student_id = assignment_students.student_id
+       where assignment_students.student_id = $1
+       group by assignment_students.assignment_id, assignments.created_at
+       order by assignments.created_at desc
+       limit 1`,
+      [studentId]
+    );
+    const row = assignmentResult.rows[0];
+    if (!row) return { ok: false, status: 404, error: "No assignment found for this student." };
+
+    const sessionResult = await client.query<{ id: string; attempt_number: number }>(
+      `insert into writing_sessions (assignment_id, student_id, attempt_number, status)
+       values ($1, $2, $3, 'draft')
+       on conflict (assignment_id, student_id, attempt_number) do nothing
+       returning id, attempt_number`,
+      [row.assignment_id, studentId, Number(row.next_attempt)]
+    );
+    const session = sessionResult.rows[0];
+    if (!session) continue;
+
+    await ensureSessionState(client, session.id);
+
+    return {
+      ok: true,
+      value: {
+        sessionId: session.id,
+        assignmentId: row.assignment_id,
+        attemptNumber: session.attempt_number
+      }
+    };
+  }
+
+  return { ok: false, status: 409, error: "Could not create a new attempt. Please retry." };
+}
+
+export async function listProfessorAssignmentsPostgres(
+  client: QueryClient,
+  professorId: string
+): Promise<MutationResult<ProfessorAssignmentListResponse>> {
+  const result = await client.query<AssignmentRow>(
+    `select assignments.id, assignments.title, assignments.prompt, assignments.created_at
+     from assignments
+     join assignment_instructors on assignment_instructors.assignment_id = assignments.id
+     where assignment_instructors.professor_id = $1
+     order by assignments.created_at desc`,
+    [professorId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      assignments: result.rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        prompt: row.prompt,
+        createdAt: timeToMs(row.created_at)
+      }))
+    }
+  };
+}
+
+export async function listAssignmentSubmissionsPostgres(
+  client: QueryClient,
+  assignmentId: string,
+  professorId: string
+): Promise<MutationResult<AssignmentSubmissionListResponse>> {
+  const access = await client.query<{ id: string }>(
+    `select assignment_id as id
+     from assignment_instructors
+     where assignment_id = $1 and professor_id = $2`,
+    [assignmentId, professorId]
+  );
+  if (!access.rows[0]) return { ok: false, status: 403, error: "Professor cannot access this assignment." };
+
+  const result = await client.query<SubmissionListRow>(
+    `select
+       writing_sessions.id as session_id,
+       writing_sessions.student_id,
+       app_users.display_name as student_name,
+       writing_sessions.status,
+       writing_sessions.submitted_at,
+       writing_sessions.locked_at,
+       writing_sessions.attempt_number
+     from writing_sessions
+     join app_users on app_users.id = writing_sessions.student_id
+     where writing_sessions.assignment_id = $1
+     order by app_users.display_name, writing_sessions.attempt_number desc`,
+    [assignmentId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      submissions: result.rows.map((row) => ({
+        sessionId: row.session_id,
+        studentId: row.student_id,
+        studentName: row.student_name,
+        status: row.status,
+        submittedAt: nullableTimeToMs(row.submitted_at),
+        lockedAt: nullableTimeToMs(row.locked_at),
+        attemptNumber: row.attempt_number
+      }))
+    }
+  };
+}
 
 export async function appendWritingEventPostgres(
   client: QueryClient,
@@ -151,7 +423,7 @@ export async function lockSubmissionPostgres(
   }
 
   const snapshotIndex = await nextIndex(client, "submission_snapshots", "snapshot_index", request.sessionId);
-  await client.query(
+  const snapshotResult = await client.query<SnapshotInsertRow>(
     `insert into submission_snapshots (
       session_id,
       snapshot_index,
@@ -159,7 +431,8 @@ export async function lockSubmissionPostgres(
       text,
       text_sha256,
       kind
-    ) values ($1, $2, to_timestamp($3 / 1000.0), $4, $5, 'submitted')`,
+    ) values ($1, $2, to_timestamp($3 / 1000.0), $4, $5, 'submitted')
+    returning id, snapshot_index`,
     [
       request.sessionId,
       snapshotIndex,
@@ -168,6 +441,7 @@ export async function lockSubmissionPostgres(
       sha256(request.submittedText)
     ]
   );
+  const snapshot = snapshotResult.rows[0];
   await client.query(
     `update writing_sessions
      set submitted_at = to_timestamp($2 / 1000.0),
@@ -177,6 +451,21 @@ export async function lockSubmissionPostgres(
      where id = $1`,
     [request.sessionId, request.snapshot.at]
   );
+  await client.query(
+    `insert into submissions (
+       session_id,
+       assignment_id,
+       student_id,
+       submitted_snapshot_id,
+       submitted_at,
+       submitted_text_sha256
+     )
+     select id, assignment_id, student_id, $2, to_timestamp($3 / 1000.0), $4
+     from writing_sessions
+     where id = $1
+     on conflict (session_id) do nothing`,
+    [request.sessionId, snapshot.id, request.snapshot.at, sha256(request.submittedText)]
+  );
   await upsertSessionState(client, request.sessionId, request.submittedText, null);
 
   return {
@@ -184,7 +473,7 @@ export async function lockSubmissionPostgres(
     value: {
       submittedAt: request.snapshot.at,
       lockedAt: request.snapshot.at,
-      snapshotIndex
+      snapshotIndex: snapshot.snapshot_index
     }
   };
 }
@@ -232,6 +521,23 @@ export async function storeTimedSummaryPostgres(
 
   const row = insertResult.rows[0];
   await client.query(
+    `insert into comprehension_responses (
+       session_id,
+       timed_summary_id,
+       started_at,
+       completed_at,
+       response_text_sha256
+     ) values ($1, $2, to_timestamp($3 / 1000.0), to_timestamp($4 / 1000.0), $5)
+     on conflict (session_id) do nothing`,
+    [
+      request.sessionId,
+      row.id,
+      request.startedAt,
+      request.completedAt,
+      sha256(request.summaryText)
+    ]
+  );
+  await client.query(
     `update writing_sessions
      set status = 'summary_submitted',
          updated_at = now()
@@ -248,6 +554,85 @@ export async function storeTimedSummaryPostgres(
       completedAt: request.completedAt,
       summaryText: row.summary_text
     }
+  };
+}
+
+export async function getReplayPostgres(
+  client: QueryClient,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+): Promise<MutationResult<ReplayResponse>> {
+  const access = await getSessionAccessPostgres(client, sessionId, user);
+  if (!access) return { ok: false, status: 404, error: "Replay not found." };
+
+  const eventsResult = await client.query<ReportEventRow>(
+    `select
+       id,
+       type,
+       occurred_at,
+       input_type,
+       start_offset,
+       removed,
+       added,
+       removed_characters,
+       added_words,
+       removed_words,
+       duration_since_previous_ms,
+       paste_words,
+       deletion_event,
+       words
+     from writing_events
+     where session_id = $1
+     order by event_index`,
+    [sessionId]
+  );
+  const snapshotsResult = await client.query<ReportSnapshotRow>(
+    `select captured_at, text
+     from submission_snapshots
+     where session_id = $1
+     order by snapshot_index`,
+    [sessionId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      frames: reconstructReplayForReport(snapshotsResult.rows.map(mapSnapshotRow), eventsResult.rows.map(mapEventRow))
+    }
+  };
+}
+
+export async function getSummaryComparisonPostgres(
+  client: QueryClient,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+): Promise<MutationResult<SummaryComparisonResponse>> {
+  const access = await getSessionAccessPostgres(client, sessionId, user);
+  if (!access) return { ok: false, status: 404, error: "Summary comparison not found." };
+
+  const submittedResult = await client.query<ReportSnapshotRow>(
+    `select submission_snapshots.captured_at, submission_snapshots.text
+     from submissions
+     join submission_snapshots on submission_snapshots.id = submissions.submitted_snapshot_id
+     where submissions.session_id = $1`,
+    [sessionId]
+  );
+  const summaryResult = await client.query<ReportSummaryRow>(
+    `select timed_summaries.summary_text
+     from comprehension_responses
+     join timed_summaries on timed_summaries.id = comprehension_responses.timed_summary_id
+     where comprehension_responses.session_id = $1`,
+    [sessionId]
+  );
+  const submittedText = submittedResult.rows[0]?.text || "";
+  const summaryText = summaryResult.rows[0]?.summary_text || "";
+  if (!submittedText || !summaryText) {
+    return { ok: false, status: 409, error: "Summary comparison is not ready." };
+  }
+
+  return {
+    ok: true,
+    value: compareSummaryToPaper(submittedText, summaryText)
   };
 }
 
@@ -302,20 +687,72 @@ export async function getProfessorReportPostgres(
   const snapshots = snapshotsResult.rows.map(mapSnapshotRow);
   const submittedText = snapshots.at(-1)?.text || "";
   const summaryText = summaryResult.rows[0]?.summary_text || "";
-  const observations = submittedText ? analyzeProcessForReport(events, submittedText) : [];
-  if (submittedText && summaryText) {
-    observations.push(...comparisonToReportObservations(compareSummaryForReport(submittedText, summaryText)));
+  const frames = reconstructReplayForReport(snapshots, events);
+  const existingReportResult = await client.query<ExistingReportRow>(
+    `select observations
+     from professor_reports
+     where session_id = $1 and professor_id = $2
+     order by generated_at desc
+     limit 1`,
+    [sessionId, professorId]
+  );
+  const existingObservations = normalizeStoredObservations(existingReportResult.rows[0]?.observations);
+  if (existingObservations) {
+    return {
+      ok: true,
+      value: {
+        observations: existingObservations,
+        frames,
+        submittedText,
+        summaryText
+      }
+    };
   }
+
+  const observations = submittedText ? analyzeProcessForReport(events, submittedText) : [];
+  let audit = null;
+  if (submittedText && summaryText) {
+    const evaluation = await evaluateSummaryComparison(sessionId, submittedText, summaryText);
+    observations.push(...comparisonToObservations(evaluation.comparison));
+    audit = evaluation.audit;
+  }
+  const reportId = await createProfessorReportPostgres(client, sessionId, professorId, observations, frames.length);
+  if (audit) await writeAiEvaluationLog(client, sessionId, reportId, audit);
 
   return {
     ok: true,
     value: {
       observations,
-      frames: reconstructReplayForReport(snapshots, events),
+      frames,
       submittedText,
       summaryText
     }
   };
+}
+
+export async function exportProfessorReportPostgres(
+  client: QueryClient,
+  sessionId: string,
+  professorId: string,
+  format: ReportExportFormat
+): Promise<MutationResult<ReportExportResponse>> {
+  const report = await getProfessorReportPostgres(client, sessionId, professorId);
+  if (!report.ok) return report;
+
+  await client.query(
+    `update professor_reports
+     set exported_at = now()
+     where id = (
+       select id
+       from professor_reports
+       where session_id = $1 and professor_id = $2
+       order by generated_at desc
+       limit 1
+     )`,
+    [sessionId, professorId]
+  );
+
+  return { ok: true, value: createReportExport(report.value, format, sessionId) };
 }
 
 async function lockSessionForStudent(client: QueryClient, sessionId: string, studentId: string) {
@@ -326,6 +763,77 @@ async function lockSessionForStudent(client: QueryClient, sessionId: string, stu
      for update`,
     [sessionId, studentId]
   );
+}
+
+async function getSessionAccessPostgres(
+  client: QueryClient,
+  sessionId: string,
+  user: { id: string; role: "student" | "professor" }
+) {
+  if (user.role === "student") {
+    const result = await client.query<{ id: string }>(
+      `select id
+       from writing_sessions
+       where id = $1 and student_id = $2`,
+      [sessionId, user.id]
+    );
+    return result.rows[0] || null;
+  }
+
+  const result = await client.query<{ id: string }>(
+    `select writing_sessions.id
+     from writing_sessions
+     join assignment_instructors on assignment_instructors.assignment_id = writing_sessions.assignment_id
+     where writing_sessions.id = $1 and assignment_instructors.professor_id = $2`,
+    [sessionId, user.id]
+  );
+  return result.rows[0] || null;
+}
+
+async function createFirstAttemptPostgres(client: QueryClient, assignmentId: string, studentId: string) {
+  const insertResult = await client.query<{ id: string }>(
+    `insert into writing_sessions (assignment_id, student_id, attempt_number, status)
+     values ($1, $2, 1, 'draft')
+     on conflict (assignment_id, student_id, attempt_number) do nothing
+     returning id`,
+    [assignmentId, studentId]
+  );
+  if (insertResult.rows[0]) return insertResult.rows[0].id;
+
+  const existingResult = await client.query<{ id: string }>(
+    `select id
+     from writing_sessions
+     where assignment_id = $1
+       and student_id = $2
+       and status <> 'archived'
+     order by attempt_number desc
+     limit 1`,
+    [assignmentId, studentId]
+  );
+  if (existingResult.rows[0]) return existingResult.rows[0].id;
+
+  throw new Error("First writing attempt already exists but is not active.");
+}
+
+async function createProfessorReportPostgres(
+  client: QueryClient,
+  sessionId: string,
+  professorId: string,
+  observations: Observation[],
+  replayFrameCount: number
+) {
+  const result = await client.query<{ id: string }>(
+    `insert into professor_reports (
+       session_id,
+       professor_id,
+       observations,
+       replay_frame_count
+     ) values ($1, $2, $3::jsonb, $4)
+     returning id`,
+    [sessionId, professorId, JSON.stringify(observations), replayFrameCount]
+  );
+
+  return result.rows[0]?.id || null;
 }
 
 async function nextIndex(client: QueryClient, table: "writing_events" | "submission_snapshots", column: "event_index" | "snapshot_index", sessionId: string) {
@@ -356,6 +864,20 @@ async function updateSessionStateAfterEvent(
   const currentText = stateResult.rows[0]?.current_text || "";
   const nextText = applyEventForReport(currentText, event);
   await upsertSessionState(client, sessionId, nextText, eventIndex);
+}
+
+async function ensureSessionState(client: QueryClient, sessionId: string) {
+  await client.query(
+    `insert into writing_session_state (
+       session_id,
+       current_text,
+       current_text_sha256,
+       last_event_index,
+       updated_at
+     ) values ($1, '', $2, -1, now())
+     on conflict (session_id) do nothing`,
+    [sessionId, sha256("")]
+  );
 }
 
 async function upsertSessionState(
@@ -416,8 +938,39 @@ function mapSnapshotRow(row: ReportSnapshotRow): Snapshot {
   };
 }
 
+function normalizeStoredObservations(value: unknown): Observation[] | null {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  if (!Array.isArray(parsed)) return null;
+
+  const observations = parsed.filter(isStoredObservation);
+  return observations.length === parsed.length ? observations : null;
+}
+
+function safeJsonParse(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function isStoredObservation(value: unknown): value is Observation {
+  if (!value || typeof value !== "object") return false;
+  const observation = value as Partial<Observation>;
+
+  return (
+    typeof observation.group === "string" &&
+    typeof observation.title === "string" &&
+    typeof observation.detail === "string"
+  );
+}
+
 function timeToMs(value: Date | string) {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+function nullableTimeToMs(value: Date | string | null) {
+  return value ? timeToMs(value) : null;
 }
 
 function reconstructReplayForReport(snapshots: Snapshot[], events: WritingEvent[]) {

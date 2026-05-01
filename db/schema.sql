@@ -192,6 +192,45 @@ alter table submission_snapshots
 add column if not exists kind snapshot_kind not null default 'submitted',
 add column if not exists event_index integer;
 
+create table if not exists submissions (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null unique references writing_sessions(id) on delete cascade,
+  assignment_id uuid not null references assignments(id) on delete cascade,
+  student_id uuid not null references app_users(id) on delete cascade,
+  submitted_snapshot_id uuid not null unique references submission_snapshots(id) on delete cascade,
+  submitted_at timestamptz not null,
+  submitted_text_sha256 text not null,
+  created_at timestamptz not null default now(),
+  check (length(submitted_text_sha256) = 64)
+);
+
+insert into submissions (
+  session_id,
+  assignment_id,
+  student_id,
+  submitted_snapshot_id,
+  submitted_at,
+  submitted_text_sha256
+)
+select
+  writing_sessions.id,
+  writing_sessions.assignment_id,
+  writing_sessions.student_id,
+  latest_submitted_snapshot.id,
+  coalesce(writing_sessions.submitted_at, latest_submitted_snapshot.captured_at),
+  latest_submitted_snapshot.text_sha256
+from writing_sessions
+join lateral (
+  select id, captured_at, text_sha256
+  from submission_snapshots
+  where submission_snapshots.session_id = writing_sessions.id
+    and submission_snapshots.kind = 'submitted'
+  order by snapshot_index desc
+  limit 1
+) latest_submitted_snapshot on true
+where writing_sessions.submitted_at is not null
+on conflict (session_id) do nothing;
+
 insert into writing_session_state (session_id, current_text, current_text_sha256, last_event_index)
 select
   writing_sessions.id,
@@ -226,6 +265,34 @@ create table if not exists timed_summaries (
   check (completed_at >= started_at),
   check (length(summary_text_sha256) = 64)
 );
+
+create table if not exists comprehension_responses (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null unique references writing_sessions(id) on delete cascade,
+  timed_summary_id uuid not null unique references timed_summaries(id) on delete cascade,
+  started_at timestamptz not null,
+  completed_at timestamptz not null,
+  response_text_sha256 text not null,
+  created_at timestamptz not null default now(),
+  check (completed_at >= started_at),
+  check (length(response_text_sha256) = 64)
+);
+
+insert into comprehension_responses (
+  session_id,
+  timed_summary_id,
+  started_at,
+  completed_at,
+  response_text_sha256
+)
+select
+  timed_summaries.session_id,
+  timed_summaries.id,
+  timed_summaries.started_at,
+  timed_summaries.completed_at,
+  timed_summaries.summary_text_sha256
+from timed_summaries
+on conflict (session_id) do nothing;
 
 create table if not exists professor_reports (
   id uuid primary key default gen_random_uuid(),
@@ -283,7 +350,10 @@ create index if not exists writing_sessions_student_status_idx on writing_sessio
 create index if not exists writing_events_session_idx on writing_events(session_id, event_index);
 create index if not exists submission_snapshots_session_idx on submission_snapshots(session_id, snapshot_index);
 create index if not exists submission_snapshots_session_kind_idx on submission_snapshots(session_id, kind, snapshot_index);
+create index if not exists submissions_assignment_student_idx on submissions(assignment_id, student_id);
+create index if not exists submissions_student_submitted_idx on submissions(student_id, submitted_at desc);
 create index if not exists timed_summaries_session_created_idx on timed_summaries(session_id, created_at desc);
+create index if not exists comprehension_responses_session_created_idx on comprehension_responses(session_id, created_at desc);
 create index if not exists professor_reports_session_idx on professor_reports(session_id);
 create index if not exists professor_reports_professor_generated_idx on professor_reports(professor_id, generated_at desc);
 create index if not exists ai_evaluation_logs_session_created_idx on ai_evaluation_logs(session_id, created_at desc);
@@ -315,7 +385,17 @@ create trigger submission_snapshots_are_immutable
 before update or delete on submission_snapshots
 for each row execute function prevent_evidence_mutation();
 
+drop trigger if exists submissions_are_immutable on submissions;
+create trigger submissions_are_immutable
+before update or delete on submissions
+for each row execute function prevent_evidence_mutation();
+
 drop trigger if exists timed_summaries_are_immutable on timed_summaries;
 create trigger timed_summaries_are_immutable
 before update or delete on timed_summaries
+for each row execute function prevent_evidence_mutation();
+
+drop trigger if exists comprehension_responses_are_immutable on comprehension_responses;
+create trigger comprehension_responses_are_immutable
+before update or delete on comprehension_responses
 for each row execute function prevent_evidence_mutation();

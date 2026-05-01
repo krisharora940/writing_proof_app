@@ -1,22 +1,32 @@
-import { NextResponse } from "next/server";
-import { reconstructReplay } from "@/lib/replay";
-import type { Snapshot, WritingEvent } from "@/lib/writing-events";
+import { NextResponse } from "next/server.js";
+import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
+import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
+import { getReplayPostgres } from "@/lib/postgres-repository";
+import { getDemoRepositoryState, getReplayDemo } from "@/lib/server-repository";
+import type { ReplayRequestBody } from "@/lib/server-boundaries";
 
 export async function POST(request: Request) {
+  const user = await getAuthenticatedUser(request);
+  if (!user) return unauthorized();
+  if (user.role !== "student" && user.role !== "professor") return forbidden();
+
   const body = await request.json().catch(() => null);
 
   if (!isReplayRequest(body)) {
     return NextResponse.json({ error: "Invalid replay request" }, { status: 400 });
   }
 
-  return NextResponse.json({
-    frames: reconstructReplay(body.snapshots, body.events)
-  });
+  const result = hasDatabaseUrl()
+    ? await getReplayPostgres(getDatabaseClient(), body.sessionId, user)
+    : getReplayDemo(getDemoRepositoryState(), body.sessionId, user);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+
+  return NextResponse.json(result.value);
 }
 
-function isReplayRequest(value: unknown): value is { snapshots: Snapshot[]; events: WritingEvent[] } {
+function isReplayRequest(value: unknown): value is ReplayRequestBody {
   if (!value || typeof value !== "object") return false;
-  const body = value as { snapshots?: unknown; events?: unknown };
+  const body = value as Partial<ReplayRequestBody>;
 
-  return Array.isArray(body.snapshots) && Array.isArray(body.events);
+  return typeof body.sessionId === "string";
 }

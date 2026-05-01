@@ -15,7 +15,9 @@ test("Postgres schema includes core production tables", () => {
     "writing_session_state",
     "writing_events",
     "submission_snapshots",
+    "submissions",
     "timed_summaries",
+    "comprehension_responses",
     "professor_reports",
     "ai_evaluation_logs"
   ].forEach((table) => {
@@ -27,14 +29,18 @@ test("writing evidence tables are immutable after insert", () => {
   [
     "writing_events_are_immutable",
     "submission_snapshots_are_immutable",
-    "timed_summaries_are_immutable"
+    "submissions_are_immutable",
+    "timed_summaries_are_immutable",
+    "comprehension_responses_are_immutable"
   ].forEach((trigger) => {
     assert.match(schema, new RegExp(`create trigger ${trigger}`));
   });
 
   assert.match(schema, /before update or delete on writing_events/);
   assert.match(schema, /before update or delete on submission_snapshots/);
+  assert.match(schema, /before update or delete on submissions/);
   assert.match(schema, /before update or delete on timed_summaries/);
+  assert.match(schema, /before update or delete on comprehension_responses/);
 });
 
 test("schema preserves append order and server-side submission lock fields", () => {
@@ -46,6 +52,8 @@ test("schema preserves append order and server-side submission lock fields", () 
   assert.match(schema, /attempt_number integer not null default 1/);
   assert.match(schema, /writing_sessions_attempt_unique/);
   assert.match(schema, /check \(locked_at is null or submitted_at is not null\)/);
+  assert.match(schema, /submitted_snapshot_id uuid not null unique references submission_snapshots/);
+  assert.match(schema, /submitted_text_sha256 text not null/);
 });
 
 test("schema separates mutable session state from immutable evidence", () => {
@@ -54,6 +62,8 @@ test("schema separates mutable session state from immutable evidence", () => {
   assert.match(schema, /last_event_index integer not null default -1/);
   assert.match(schema, /kind snapshot_kind not null default 'submitted'/);
   assert.match(schema, /submission_snapshots_session_kind_idx/);
+  assert.match(schema, /timed_summary_id uuid not null unique references timed_summaries/);
+  assert.match(schema, /response_text_sha256 text not null/);
 });
 
 test("schema supports authenticated identity and professor assignment access", () => {

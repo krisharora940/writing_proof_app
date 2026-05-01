@@ -43,11 +43,14 @@ body {
 }
 
 button,
-select {
+select,
+input,
+a.ghost {
   font: inherit;
 }
 
-button {
+button,
+a.ghost {
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -61,10 +64,12 @@ button {
   justify-content: center;
   min-height: 42px;
   padding: 0 16px;
+  text-decoration: none;
   transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
-button:hover {
+button:hover,
+a.ghost:hover {
   border-color: var(--accent);
   box-shadow: 0 8px 22px rgba(31, 29, 26, 0.1);
   transform: translateY(-1px);
@@ -91,6 +96,19 @@ button:disabled {
   background: var(--surface);
 }
 
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.export-actions .ghost {
+  font-size: 13px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
 .topbar {
   align-items: end;
   background: linear-gradient(180deg, #eee6dc, #f8f7f4);
@@ -110,6 +128,44 @@ button:disabled {
   gap: 7px;
   margin-left: auto;
   min-width: 210px;
+}
+
+.account-name {
+  font-family: var(--font-ui), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.account-role {
+  color: var(--muted);
+  font-family: var(--font-ui), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  text-align: right;
+}
+
+.account-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.text-button {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 0;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.text-button:hover {
+  box-shadow: none;
+  color: var(--text);
+  transform: none;
 }
 
 select {
@@ -175,9 +231,36 @@ main {
 
 .assignment,
 .workspace,
-.report-grid {
+.report-grid,
+.dashboard-grid,
+.evidence-grid {
   display: grid;
   gap: 18px;
+}
+
+.flow-strip {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.flow-step {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--font-ui), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 11px;
+}
+
+.flow-step.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .assignment {
@@ -190,14 +273,38 @@ main {
   padding: 18px;
 }
 
+.assignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .workspace {
   align-items: start;
   grid-template-columns: 310px minmax(0, 1fr);
 }
 
+.student-main {
+  display: grid;
+  gap: 18px;
+}
+
 .report-grid {
   align-items: start;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 0.72fr);
+}
+
+.dashboard-grid {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-bottom: 18px;
+}
+
+.evidence-grid {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 18px;
 }
 
 .panel,
@@ -319,7 +426,21 @@ textarea {
   width: 100%;
 }
 
+input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--font-ui), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  min-height: 42px;
+  outline: none;
+  padding: 0 12px;
+  width: 100%;
+}
+
 textarea:focus,
+input:focus,
 select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px rgba(31, 29, 26, 0.1);
@@ -378,6 +499,72 @@ textarea::placeholder {
   padding: 18px;
 }
 
+.status-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 1px 1px rgba(76, 47, 24, 0.06);
+  max-width: 680px;
+  padding: 22px;
+}
+
+.status-panel p:not(.eyebrow) {
+  color: var(--muted);
+  line-height: 1.55;
+  margin-top: 8px;
+}
+
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.demo-login {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.select-list {
+  display: grid;
+  gap: 10px;
+}
+
+.list-button {
+  align-items: start;
+  display: grid;
+  gap: 5px;
+  height: auto;
+  justify-content: stretch;
+  min-height: 68px;
+  padding: 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.list-button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.list-button span,
+.list-button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-button span {
+  font-weight: 600;
+}
+
+.list-button small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .event-list {
   display: grid;
   gap: 10px;
@@ -405,7 +592,16 @@ textarea::placeholder {
   min-height: 520px;
 }
 
+.compact-replay {
+  min-height: 0;
+}
+
 #replay-slider {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+#student-replay-slider {
   accent-color: var(--accent);
   width: 100%;
 }
@@ -420,6 +616,22 @@ textarea::placeholder {
   min-height: 420px;
   overflow: auto;
   padding: 16px;
+  white-space: pre-wrap;
+}
+
+.student-replay-output {
+  min-height: 180px;
+}
+
+.text-evidence {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font: 16px/1.65 var(--font-body), ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px;
   white-space: pre-wrap;
 }
 
@@ -440,8 +652,23 @@ textarea::placeholder {
   }
 
   .workspace,
-  .report-grid {
+  .report-grid,
+  .dashboard-grid,
+  .evidence-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-name,
+  .account-role {
+    text-align: left;
+  }
+
+  .account-row {
+    justify-content: flex-start;
+  }
+
+  .assignment-actions {
+    justify-content: flex-start;
   }
 
   .editor-shell {
