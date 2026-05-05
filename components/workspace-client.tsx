@@ -56,6 +56,7 @@ type ProfessorAssignment = ProfessorAssignmentListResponse["assignments"][number
 type ProfessorSubmission = AssignmentSubmissionListResponse["submissions"][number];
 type AssignmentRosterStudent = AssignmentRosterResponse["students"][number];
 type StudentAssignment = StudentAssignmentListResponse["assignments"][number];
+type TextFormatKind = "bold" | "italic" | "underline";
 
 type ProfessorState = {
   assignments: ProfessorAssignment[];
@@ -138,6 +139,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
   const mutationQueueRef = useRef(Promise.resolve(true));
 
   const activeRole = currentUser?.role;
+  const showWorkspaceNavLinks = !currentUser;
 
   const handleAccessError = useCallback((status: number, fallback: string) => {
     if (status === 401) {
@@ -962,8 +964,12 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
         </div>
         <nav className="product-nav" aria-label="Primary navigation">
           <Link href="/">Home</Link>
-          <Link href="/student" aria-current={requiredRole === "student" ? "page" : undefined}>Student</Link>
-          <Link href="/professor" aria-current={requiredRole === "professor" ? "page" : undefined}>Professor</Link>
+          {showWorkspaceNavLinks ? (
+            <>
+              <Link href="/student" aria-current={requiredRole === "student" ? "page" : undefined}>Student</Link>
+              <Link href="/professor" aria-current={requiredRole === "professor" ? "page" : undefined}>Professor</Link>
+            </>
+          ) : null}
         </nav>
         <div className="account-bar" aria-live="polite">
           {currentUser ? (
@@ -1144,18 +1150,49 @@ function StudentView({
   pendingInputTypeRef: MutableRefObject<string>;
   pendingPasteRef: MutableRefObject<{ words: number } | null>;
 }) {
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+
+  function applyFormat(kind: TextFormatKind) {
+    if (!studentState || submitted || !editorRef.current) return;
+
+    const textarea = editorRef.current;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const nextState = formatSelectedText(studentState.paperText, selectionStart, selectionEnd, kind);
+    onChange(nextState.text);
+
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextState.selectionStart, nextState.selectionEnd);
+    });
+  }
+
   if (loading) return <StatusPanel title="Loading assignment" message="Hydrating your draft from the database." />;
   if (error) return <StatusPanel title="Assignment unavailable" message={error} />;
   if (!studentState) return <StatusPanel title="No assignment" message="No active writing session was returned." />;
 
   return (
-    <section className="view active">
+    <section className="view active classroom-dashboard">
+      <section className="course-banner student-banner">
+        <div>
+          <p className="course-label">Current assignment</p>
+          <h2>{studentState.assignment.title}</h2>
+          <p>{studentState.assignment.prompt}</p>
+        </div>
+        <div className="course-banner-actions">
+          <span>{submitted ? "Submitted" : "Draft in progress"}</span>
+          <button className="primary" disabled={submitted} onClick={onSubmit}>
+            Submit Paper
+          </button>
+        </div>
+      </section>
+
       <section className="student-assignment-shell">
-        <section className="panel">
+        <section className="panel classroom-card">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Assigned Work</p>
-              <h2>Choose Assignment</h2>
+              <p className="eyebrow">Classwork</p>
+              <h2>Assignments</h2>
             </div>
           </div>
           {assignmentsLoading ? (
@@ -1189,9 +1226,9 @@ function StudentView({
         <span className={studentState.summaryCompletedAt ? "flow-step active" : "flow-step"}>Summary</span>
       </section>
 
-      <section className="assignment">
+      <section className="assignment classroom-card">
         <div>
-          <p className="eyebrow">Assignment</p>
+          <p className="eyebrow">Instructions</p>
           <h2>{studentState.assignment.prompt}</h2>
         </div>
         <div className="assignment-actions">
@@ -1202,7 +1239,7 @@ function StudentView({
       </section>
 
       <section className="workspace">
-        <aside className="panel">
+        <aside className="panel classroom-card">
           <div className="panel-header compact">
             <div>
               <p className="eyebrow">Session</p>
@@ -1218,16 +1255,28 @@ function StudentView({
           </dl>
           {serverSyncError ? <p className="sync-error">{serverSyncError}</p> : null}
           {studentState.summaryCompletedAt ? <p className="note">Timed summary complete. The paper remains locked.</p> : null}
-          <p className="note">The editor records factual writing events for review after submission.</p>
+          <p className="note">Writing events save automatically while you draft.</p>
         </aside>
 
         <div className="student-main">
-          <section className="editor-shell">
+          <section className="editor-shell classroom-card">
             <div className="editor-heading">
               <label htmlFor="paper-editor">Paper</label>
               <span>{submitted ? "Submitted" : "Draft"}</span>
             </div>
+            <div className="editor-toolbar" aria-label="Text formatting">
+              <button aria-label="Bold" className="toolbar-button" disabled={submitted} onClick={() => applyFormat("bold")} type="button">
+                <strong>B</strong>
+              </button>
+              <button aria-label="Italic" className="toolbar-button" disabled={submitted} onClick={() => applyFormat("italic")} type="button">
+                <em>I</em>
+              </button>
+              <button aria-label="Underline" className="toolbar-button" disabled={submitted} onClick={() => applyFormat("underline")} type="button">
+                <span className="toolbar-underline">U</span>
+              </button>
+            </div>
             <textarea
+              ref={editorRef}
               id="paper-editor"
               spellCheck
               placeholder="Start writing here..."
@@ -1245,7 +1294,7 @@ function StudentView({
             />
           </section>
 
-          <section className="panel replay-panel compact-replay">
+          <section className="panel replay-panel compact-replay classroom-card">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Process Replay</p>
@@ -1321,6 +1370,7 @@ function ProfessorView({
   const tagCategories = useMemo(() => Array.from(new Set(evidenceTags.map((tag) => tag.category))).sort(), [evidenceTags]);
   const submittedCount = professorState.submissions.filter((submission) => submission.submittedAt).length;
   const readyCount = professorState.submissions.filter((submission) => submission.sessionId).length;
+  const selectedAssignment = professorState.assignments.find((assignment) => assignment.id === professorState.selectedAssignmentId);
   const sortedEvidenceTags = useMemo(() => {
     const filtered = tagCategory === "all" ? evidenceTags : evidenceTags.filter((tag) => tag.category === tagCategory);
     return [...filtered].sort((a, b) => {
@@ -1331,13 +1381,26 @@ function ProfessorView({
   }, [evidenceTags, tagCategory, tagSort]);
 
   return (
-    <section className="view active">
-      <section className="dashboard-grid">
-        <section className="panel">
+    <section className="view active classroom-dashboard professor-dashboard">
+      <section className="course-banner professor-banner">
+        <div>
+          <p className="course-label">Professor dashboard</p>
+          <h2>{selectedAssignment?.title ?? "Choose a classwork item"}</h2>
+          <p>{selectedAssignment?.prompt ?? "Create an assignment or select one to review student writing evidence."}</p>
+        </div>
+        <dl className="course-stats">
+          <div><dt>Students</dt><dd>{professorState.roster.length}</dd></div>
+          <div><dt>Started</dt><dd>{readyCount}</dd></div>
+          <div><dt>Submitted</dt><dd>{submittedCount}</dd></div>
+        </dl>
+      </section>
+
+      <section className="dashboard-grid classroom-management-grid">
+        <section className="panel classroom-card">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Assignments</p>
-              <h2>Choose Review Set</h2>
+              <p className="eyebrow">Classwork</p>
+              <h2>Assignments</h2>
             </div>
           </div>
           <form className="stacked-form" onSubmit={onCreateAssignment}>
@@ -1387,11 +1450,11 @@ function ProfessorView({
           )}
         </section>
 
-        <section className="panel">
+        <section className="panel classroom-card">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Roster</p>
-              <h2>Enroll Students</h2>
+              <p className="eyebrow">People</p>
+              <h2>Students</h2>
             </div>
           </div>
           <form className="stacked-form compact-form" onSubmit={onEnrollStudent}>
@@ -1441,7 +1504,7 @@ function ProfessorView({
           )}
         </section>
 
-        <section className="panel review-summary">
+        <section className="panel review-summary classroom-card">
           <div className="panel-header">
             <div>
               <p className="eyebrow">Review Queue</p>
@@ -1457,12 +1520,12 @@ function ProfessorView({
         </section>
       </section>
 
-      <section className="dashboard-grid">
-        <section className="panel">
+      <section className="dashboard-grid classroom-stream-grid">
+        <section className="panel classroom-card">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Submissions</p>
-              <h2>Choose Session</h2>
+              <p className="eyebrow">Student Work</p>
+              <h2>Submissions</h2>
             </div>
           </div>
           {professorState.submissionsLoading ? (
@@ -1490,7 +1553,7 @@ function ProfessorView({
       </section>
 
       <section className="report-grid">
-        <section className="panel">
+        <section className="panel classroom-card">
           <div className="panel-header">
             <div>
               <p className="eyebrow">Professor Review</p>
@@ -1567,7 +1630,7 @@ function ProfessorView({
           )}
         </section>
 
-        <section className="panel replay-panel">
+        <section className="panel replay-panel classroom-card">
           <div className="panel-header">
             <div>
               <p className="eyebrow">Rewind</p>
@@ -1609,7 +1672,7 @@ function ProfessorView({
 
       {professorState.report ? (
         <section className="evidence-grid">
-          <section className="panel paste-card-panel">
+          <section className="panel paste-card-panel classroom-card">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Paste Cards</p>
@@ -1642,7 +1705,7 @@ function ProfessorView({
               <div className="report-empty">No paste events recorded for this submission.</div>
             )}
           </section>
-          <section className="panel">
+          <section className="panel classroom-card">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Submitted Paper</p>
@@ -1651,7 +1714,7 @@ function ProfessorView({
             </div>
             <div className="text-evidence">{professorState.report.submittedText || "No submitted text returned."}</div>
           </section>
-          <section className="panel">
+          <section className="panel classroom-card">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Timed Summary</p>
@@ -1690,6 +1753,29 @@ function studentSessionToState(data: StudentSessionResponse): StudentState {
     lockedAt: data.session.lockedAt,
     summaryCompletedAt: data.summaryCompletedAt,
     status: data.session.status
+  };
+}
+
+function formatSelectedText(value: string, selectionStart: number, selectionEnd: number, kind: TextFormatKind) {
+  const selected = value.slice(selectionStart, selectionEnd);
+  const fallback = kind === "underline" ? "underlined text" : `${kind} text`;
+  const insertion = selected || fallback;
+
+  const wrappers: Record<TextFormatKind, [string, string]> = {
+    bold: ["**", "**"],
+    italic: ["*", "*"],
+    underline: ["<u>", "</u>"]
+  };
+
+  const [prefix, suffix] = wrappers[kind];
+  const nextText = `${value.slice(0, selectionStart)}${prefix}${insertion}${suffix}${value.slice(selectionEnd)}`;
+  const insertedStart = selectionStart + prefix.length;
+  const insertedEnd = insertedStart + insertion.length;
+
+  return {
+    text: nextText,
+    selectionStart: insertedStart,
+    selectionEnd: insertedEnd
   };
 }
 
