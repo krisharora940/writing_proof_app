@@ -303,7 +303,8 @@ test("getProfessorReportPostgres returns neutral paste cards and timeline marker
 
   assert.equal(result.ok, true);
   assert.equal(result.value.pasteEventCards.length, 1);
-  assert.deepEqual(result.value.pasteEventCards[0].tagIds, ["paste-unchanged-event-paste-1"]);
+  assert.ok(result.value.pasteEventCards[0].tagIds.includes("paste-unchanged-event-paste-1"));
+  assert.ok(result.value.pasteEventCards[0].tagIds.includes("behavioral-medium-paste-event-paste-1"));
   assert.equal(result.value.pasteEventCards[0].replayFrameIndex, 1);
   assert.ok(result.value.timelineMarkers.some((item) => item.kind === "paste-event" && item.eventId === "event-paste-1"));
   assert.ok(result.value.timelineMarkers.some((item) => item.kind === "draft-start"));

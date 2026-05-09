@@ -1,7 +1,8 @@
 import type { SummaryComparison } from "./summary-comparison.ts";
+import type { BehavioralRiskSignal } from "./behavioral-risk.ts";
 import { countWords, type Observation, type WritingEvent } from "./writing-events.ts";
 
-export type EvidenceTagCategory = "Process Event" | "Revision Pattern" | "Summary Alignment" | "Report Observation";
+export type EvidenceTagCategory = "Process Event" | "Revision Pattern" | "Behavioral Indicator" | "Summary Alignment" | "Report Observation";
 
 export type EvidenceTag = {
   id: string;
@@ -83,6 +84,17 @@ export function generateSummaryEvidenceTags(comparison: SummaryComparison): Evid
   }));
 }
 
+export function generateBehavioralRiskEvidenceTags(signals: BehavioralRiskSignal[]): EvidenceTag[] {
+  return dedupeTags(signals.map((signal) => ({
+    id: `behavioral-${signal.id}`,
+    label: `${formatSeverity(signal.severity)}: ${signal.label}`,
+    category: "Behavioral Indicator" as const,
+    detail: signal.detail,
+    eventId: signal.eventId,
+    at: signal.at
+  })));
+}
+
 export function generateObservationEvidenceTags(observations: Observation[]): EvidenceTag[] {
   return dedupeTags(observations.map((observation, index) => ({
     id: `observation-${index}-${slugify(observation.title)}`,
@@ -99,6 +111,7 @@ export function groupEvidenceTags(tags: EvidenceTag[]) {
   }, {
     "Process Event": [],
     "Revision Pattern": [],
+    "Behavioral Indicator": [],
     "Summary Alignment": [],
     "Report Observation": []
   });
@@ -116,4 +129,10 @@ function dedupeTags(tags: EvidenceTag[]) {
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tag";
+}
+
+function formatSeverity(severity: BehavioralRiskSignal["severity"]) {
+  if (severity === "high") return "High";
+  if (severity === "medium") return "Medium";
+  return "Positive";
 }

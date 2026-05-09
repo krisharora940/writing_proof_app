@@ -5,6 +5,7 @@ import type { SummaryComparison } from "./summary-comparison";
 import type { Observation } from "./writing-events";
 import type { ReportExport } from "./report-export";
 import type { EvidenceTag } from "./evidence-tags";
+import type { BehavioralRiskSummary } from "./behavioral-risk";
 
 export type ApiBoundary = {
   method: "GET" | "POST" | "DELETE";
@@ -228,6 +229,7 @@ export type ReportTimelineMarker = {
 export type ProfessorReportResponse = {
   observations: Observation[];
   tags: EvidenceTag[];
+  behavioralRisk: BehavioralRiskSummary;
   frames: ReplayFrame[];
   pasteEventCards: PasteEventCard[];
   timelineMarkers: ReportTimelineMarker[];

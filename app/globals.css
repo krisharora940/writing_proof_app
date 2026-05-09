@@ -238,6 +238,10 @@ main {
   gap: 18px;
 }
 
+.professor-dashboard {
+  gap: 24px;
+}
+
 .course-banner {
   background:
     radial-gradient(circle at right 12%, rgba(255, 255, 255, 0.18), transparent 24%),
@@ -688,6 +692,10 @@ main {
   grid-template-columns: minmax(300px, 0.65fr) minmax(0, 1fr);
 }
 
+.professor-detail-nav {
+  margin-top: -4px;
+}
+
 .evidence-grid {
   align-items: start;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -968,9 +976,21 @@ textarea::placeholder {
   gap: 10px;
 }
 
+.list-link {
+  text-decoration: none;
+}
+
+.list-button.muted {
+  cursor: default;
+  opacity: 0.72;
+}
+
 .list-button {
   align-items: start;
   background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
   display: grid;
   gap: 6px;
   height: auto;

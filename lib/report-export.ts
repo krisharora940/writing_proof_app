@@ -43,6 +43,7 @@ function createCsv(report: ProfessorReportResponse) {
   const markers = report.timelineMarkers || [];
   const rows = [
     ["section", "group", "title", "detail"],
+    ["behavioral_summary", "risk_points", String(report.behavioralRisk?.totalPoints ?? 0), `${report.behavioralRisk?.highCount ?? 0} high; ${report.behavioralRisk?.mediumCount ?? 0} medium; ${report.behavioralRisk?.positiveCount ?? 0} positive`],
     ...tags.map((item) => ["tag", item.category, item.label, item.detail]),
     ...pasteCards.map((item) => ["paste_card", `${item.wordCount} words`, item.title, item.detail]),
     ...markers.map((item) => ["timeline_marker", item.kind, item.label, item.detail]),
@@ -73,6 +74,8 @@ function createHtml(report: ProfessorReportResponse) {
     "<html><head><meta charset=\"utf-8\"><title>Neutral Evidence Report</title>",
     "<style>body{font-family:Arial,sans-serif;line-height:1.5;max-width:920px;margin:40px auto;padding:0 24px;color:#17202a}article{border-top:1px solid #ccd5df;padding:16px 0}p:first-child{font-size:12px;text-transform:uppercase;color:#56616f}pre{white-space:pre-wrap;background:#f6f8fa;padding:16px;border-radius:6px}</style>",
     "</head><body><h1>Neutral Evidence Report</h1>",
+    "<h2>Behavioral Indicators</h2>",
+    `<p>${escapeHtml(String(report.behavioralRisk?.totalPoints ?? 0))} risk points; ${escapeHtml(String(report.behavioralRisk?.highCount ?? 0))} high, ${escapeHtml(String(report.behavioralRisk?.mediumCount ?? 0))} medium, ${escapeHtml(String(report.behavioralRisk?.positiveCount ?? 0))} positive indicators.</p>`,
     "<h2>Evidence Tags</h2>",
     tags || "<p>No evidence tags available.</p>",
     "<h2>Paste Event Cards</h2>",
@@ -92,6 +95,9 @@ function createHtml(report: ProfessorReportResponse) {
 function createPdf(report: ProfessorReportResponse) {
   const lines = [
     "Neutral Evidence Report",
+    "",
+    "Behavioral Indicators",
+    `${report.behavioralRisk?.totalPoints ?? 0} risk points; ${report.behavioralRisk?.highCount ?? 0} high, ${report.behavioralRisk?.mediumCount ?? 0} medium, ${report.behavioralRisk?.positiveCount ?? 0} positive indicators.`,
     "",
     "Evidence Tags",
     ...(report.tags || []).flatMap((item) => [

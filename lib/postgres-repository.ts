@@ -19,11 +19,17 @@ import type {
   TimedSummaryRequest
 } from "./server-boundaries";
 import { evaluateSummaryComparison, writeAiEvaluationLog } from "./ai-evaluation.ts";
-import { generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
+import {
+  generateBehavioralRiskEvidenceTags,
+  generateObservationEvidenceTags,
+  generateProcessEvidenceTags,
+  generateSummaryEvidenceTags
+} from "./evidence-tags.ts";
 import { createReportExport, type ReportExportFormat } from "./report-export.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import { buildReportProcessHighlights, type MutationResult, type StoredTimedSummary } from "./server-repository.ts";
 import type { ReplayFrame } from "./replay";
+import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
 import { calculateSessionMetrics, type Observation, type Snapshot, type WritingEvent } from "./writing-events.ts";
 
 export type QueryResult<Row> = {
@@ -968,6 +974,7 @@ export async function getProfessorReportPostgres(
   const submittedText = snapshots.at(-1)?.text || "";
   const summaryText = summaryResult.rows[0]?.summary_text || "";
   const frames = reconstructReplayForReport(snapshots, events);
+  const behavioralRisk = submittedText ? analyzeBehavioralRisk(events, submittedText) : emptyBehavioralRiskForReport();
   const existingReportResult = await client.query<ExistingReportRow>(
     `select observations
      from professor_reports
@@ -981,6 +988,7 @@ export async function getProfessorReportPostgres(
     const existingTags = submittedText
       ? [
         ...generateProcessEvidenceTags(events, submittedText),
+        ...generateBehavioralRiskEvidenceTags(behavioralRisk.signals),
         ...(summaryText ? generateSummaryEvidenceTags(compareSummaryToPaper(submittedText, summaryText)) : []),
         ...generateObservationEvidenceTags(existingObservations)
       ]
@@ -991,6 +999,7 @@ export async function getProfessorReportPostgres(
       value: {
         observations: existingObservations,
         tags: existingTags,
+        behavioralRisk,
         frames,
         ...highlights,
         submittedText,
@@ -999,8 +1008,15 @@ export async function getProfessorReportPostgres(
     };
   }
 
-  const observations = submittedText ? analyzeProcessForReport(events, submittedText) : [];
-  const tags = submittedText ? generateProcessEvidenceTags(events, submittedText) : [];
+  const observations = submittedText
+    ? [...analyzeProcessForReport(events, submittedText), ...behavioralSignalsToObservations(behavioralRisk.signals)]
+    : [];
+  const tags = submittedText
+    ? [
+      ...generateProcessEvidenceTags(events, submittedText),
+      ...generateBehavioralRiskEvidenceTags(behavioralRisk.signals)
+    ]
+    : [];
   let audit = null;
   if (submittedText && summaryText) {
     const evaluation = await evaluateSummaryComparison(sessionId, submittedText, summaryText);
@@ -1018,6 +1034,7 @@ export async function getProfessorReportPostgres(
     value: {
       observations,
       tags,
+      behavioralRisk,
       frames,
       ...highlights,
       submittedText,
@@ -1049,6 +1066,16 @@ export async function exportProfessorReportPostgres(
   );
 
   return { ok: true, value: createReportExport(report.value, format, sessionId) };
+}
+
+function emptyBehavioralRiskForReport() {
+  return {
+    totalPoints: 0,
+    highCount: 0,
+    mediumCount: 0,
+    positiveCount: 0,
+    signals: []
+  };
 }
 
 async function withTransaction<T>(

@@ -23,7 +23,8 @@ import { DEMO_ASSIGNMENT_ID, DEMO_PROFESSOR_ID, DEMO_SESSION_ID, DEMO_STUDENT_ID
 import { createReportExport, type ReportExportFormat } from "./report-export.ts";
 import { reconstructReplay } from "./replay.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
-import { generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
+import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
+import { generateBehavioralRiskEvidenceTags, generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
 import { analyzeProcess, calculateSessionMetrics, countWords } from "./writing-events.ts";
 import type { Snapshot, WritingEvent } from "./writing-events";
 import type { ReplayFrame } from "./replay";
@@ -505,8 +506,16 @@ export function getProfessorReportDemo(
     return { ok: false, status: 403, error: "Professor cannot access this report." };
   }
 
-  const observations = state.submittedText ? analyzeProcess(state.events, state.submittedText) : [];
-  const tags = state.submittedText ? generateProcessEvidenceTags(state.events, state.submittedText) : [];
+  const behavioralRisk = state.submittedText ? analyzeBehavioralRisk(state.events, state.submittedText) : emptyBehavioralRisk();
+  const observations = state.submittedText
+    ? [...analyzeProcess(state.events, state.submittedText), ...behavioralSignalsToObservations(behavioralRisk.signals)]
+    : [];
+  const tags = state.submittedText
+    ? [
+      ...generateProcessEvidenceTags(state.events, state.submittedText),
+      ...generateBehavioralRiskEvidenceTags(behavioralRisk.signals)
+    ]
+    : [];
   if (state.submittedText && state.timedSummary?.summaryText) {
     const comparison = compareSummaryToPaper(state.submittedText, state.timedSummary.summaryText);
     observations.push(...comparisonToObservations(comparison));
@@ -521,11 +530,22 @@ export function getProfessorReportDemo(
     value: {
       observations,
       tags,
+      behavioralRisk,
       frames,
       ...highlights,
       submittedText: state.submittedText,
       summaryText: state.timedSummary?.summaryText || ""
     }
+  };
+}
+
+function emptyBehavioralRisk() {
+  return {
+    totalPoints: 0,
+    highCount: 0,
+    mediumCount: 0,
+    positiveCount: 0,
+    signals: []
   };
 }
 

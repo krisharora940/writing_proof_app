@@ -100,7 +100,19 @@ const initialProfessorState: ProfessorState = {
   reportError: ""
 };
 
-export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserRole }) {
+type WorkspaceClientProps = {
+  requiredRole?: UserRole;
+  professorDetailMode?: boolean;
+  initialProfessorAssignmentId?: string;
+  initialProfessorSessionId?: string;
+};
+
+export default function WorkspaceClient({
+  requiredRole,
+  professorDetailMode = false,
+  initialProfessorAssignmentId = "",
+  initialProfessorSessionId = ""
+}: WorkspaceClientProps) {
   const router = useRouter();
   const [accessState, setAccessState] = useState<AccessState>("loading");
   const [accessMessage, setAccessMessage] = useState("");
@@ -114,8 +126,13 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
   const [studentAssignmentsLoading, setStudentAssignmentsLoading] = useState(false);
   const [studentAssignmentsError, setStudentAssignmentsError] = useState("");
   const [studentLoading, setStudentLoading] = useState(false);
+  const [submitLoading, setSubmitLoading] = useState(false);
   const [studentError, setStudentError] = useState("");
-  const [professorState, setProfessorState] = useState<ProfessorState>(initialProfessorState);
+  const [professorState, setProfessorState] = useState<ProfessorState>(() => ({
+    ...initialProfessorState,
+    selectedAssignmentId: initialProfessorAssignmentId,
+    selectedSessionId: initialProfessorSessionId
+  }));
   const [assignmentForm, setAssignmentForm] = useState({ title: "", prompt: "", dueAt: "" });
   const [enrollmentForm, setEnrollmentForm] = useState({ displayName: "", email: "" });
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -218,8 +235,6 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
       assignmentCreateError: "",
       roster: [],
       submissions: [],
-      selectedAssignmentId: "",
-      selectedSessionId: "",
       report: null
     }));
 
@@ -229,7 +244,11 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
         ...current,
         assignments: data.assignments,
         assignmentsLoading: false,
-        selectedAssignmentId: data.assignments[0]?.id ?? "",
+        selectedAssignmentId:
+          data.assignments.find((assignment) => assignment.id === current.selectedAssignmentId)?.id
+          ?? data.assignments.find((assignment) => assignment.id === initialProfessorAssignmentId)?.id
+          ?? data.assignments[0]?.id
+          ?? "",
         assignmentsError: ""
       }));
       setAccessState("authenticated");
@@ -241,7 +260,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
         assignmentsError: error instanceof Error ? error.message : "Assignments failed to load."
       }));
     }
-  }, [apiGet]);
+  }, [apiGet, initialProfessorAssignmentId]);
 
   async function createAssignment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -366,7 +385,11 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
       setCurrentUser(null);
       setStudentState(null);
       setStudentAssignments([]);
-      setProfessorState(initialProfessorState);
+      setProfessorState({
+        ...initialProfessorState,
+        selectedAssignmentId: initialProfessorAssignmentId,
+        selectedSessionId: initialProfessorSessionId
+      });
       setAccessState("unauthenticated");
       setAccessMessage("Sign in is required to continue.");
       setSignOutLoading(false);
@@ -392,7 +415,6 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
       submissionsLoading: true,
       submissionsError: "",
       submissions: [],
-      selectedSessionId: "",
       report: null
     }));
 
@@ -411,7 +433,12 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
           submissions: data.submissions,
           submissionsLoading: false,
           submissionsError: "",
-          selectedSessionId: data.submissions.find((submission) => submission.sessionId)?.sessionId ?? ""
+          selectedSessionId:
+            data.submissions.find((submission) => submission.sessionId === current.selectedSessionId)?.sessionId
+            ?? data.submissions.find((submission) => submission.sessionId === initialProfessorSessionId)?.sessionId
+            ?? data.submissions.find((submission) => submission.submittedAt && submission.sessionId)?.sessionId
+            ?? data.submissions.find((submission) => submission.sessionId)?.sessionId
+            ?? ""
         }));
       })
       .catch((error: Error) => {
@@ -426,7 +453,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
       });
 
     return () => controller.abort();
-  }, [handleAccessError, professorState.selectedAssignmentId]);
+  }, [handleAccessError, initialProfessorSessionId, professorState.selectedAssignmentId]);
 
   useEffect(() => {
     if (!professorState.selectedAssignmentId) return;
@@ -567,6 +594,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
   const deletionCount = studentState?.events.filter((event) => event.deletionEvent).length ?? 0;
   const observations = activeRole === "professor" ? professorState.report?.observations ?? [] : studentObservations;
   const evidenceTags = activeRole === "professor" ? professorState.report?.tags ?? [] : [];
+  const behavioralRisk = activeRole === "professor" ? professorState.report?.behavioralRisk ?? null : null;
   const pasteEventCards = activeRole === "professor" ? professorState.report?.pasteEventCards ?? [] : [];
   const timelineMarkers = activeRole === "professor" ? professorState.report?.timelineMarkers ?? [] : [];
   const activeReplayFrames = activeRole === "professor" ? professorState.report?.frames ?? [] : replayFrames;
@@ -627,7 +655,9 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
   }
 
   async function submitPaper() {
-    if (!studentState || submitted) return;
+    if (!studentState || submitted || submitLoading) return;
+
+    setSubmitLoading(true);
 
     const now = Date.now();
     const submitEvent = recordEvent({
@@ -638,7 +668,10 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
     const snapshot = { at: now, text: studentState.paperText };
     await persistWritingEvent(submitEvent);
     const locked = await lockSubmittedPaper(studentState.paperText, snapshot);
-    if (!locked) return;
+    if (!locked) {
+      setSubmitLoading(false);
+      return;
+    }
 
     updateStudentState((current) => ({
       ...current,
@@ -654,6 +687,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
     setRemainingSeconds(120);
     setSummaryOpen(true);
     startSummaryTimer();
+    setSubmitLoading(false);
   }
 
   function startSummaryTimer() {
@@ -1032,6 +1066,7 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
             assignmentsLoading={studentAssignmentsLoading}
             assignmentsError={studentAssignmentsError}
             loading={studentLoading}
+            submitLoading={submitLoading}
             error={studentError}
             submitted={submitted}
             sessionMetrics={sessionMetrics}
@@ -1055,8 +1090,10 @@ export default function WorkspaceClient({ requiredRole }: { requiredRole?: UserR
             professorState={professorState}
             assignmentForm={assignmentForm}
             enrollmentForm={enrollmentForm}
+            professorDetailMode={professorDetailMode}
             observations={observations}
             evidenceTags={evidenceTags}
+            behavioralRisk={behavioralRisk}
             pasteEventCards={pasteEventCards}
             timelineMarkers={timelineMarkers}
             replayFrame={replayFrame}
@@ -1109,6 +1146,7 @@ function StudentView({
   assignmentsLoading,
   assignmentsError,
   loading,
+  submitLoading,
   error,
   submitted,
   sessionMetrics,
@@ -1132,6 +1170,7 @@ function StudentView({
   assignmentsLoading: boolean;
   assignmentsError: string;
   loading: boolean;
+  submitLoading: boolean;
   error: string;
   submitted: boolean;
   sessionMetrics: SessionMetrics | null;
@@ -1181,8 +1220,8 @@ function StudentView({
         </div>
         <div className="course-banner-actions">
           <span>{submitted ? "Submitted" : "Draft in progress"}</span>
-          <button className="primary" disabled={submitted} onClick={onSubmit}>
-            Submit Paper
+          <button className="primary" disabled={submitted || submitLoading} onClick={onSubmit}>
+            {submitLoading ? "Submitting..." : "Submit Paper"}
           </button>
         </div>
       </section>
@@ -1192,7 +1231,7 @@ function StudentView({
           <div className="panel-header">
             <div>
               <p className="eyebrow">Classwork</p>
-              <h2>Assignments</h2>
+              <h2>Assigned Work</h2>
             </div>
           </div>
           {assignmentsLoading ? (
@@ -1200,7 +1239,7 @@ function StudentView({
           ) : assignmentsError ? (
             <div className="report-empty">{assignmentsError}</div>
           ) : assignments.length ? (
-            <div className="select-list">
+            <div className="select-list" aria-label="Choose Assignment">
               {assignments.map((assignment) => (
                 <button
                   className={assignment.id === studentState.assignment.id ? "list-button active" : "list-button"}
@@ -1232,8 +1271,8 @@ function StudentView({
           <h2>{studentState.assignment.prompt}</h2>
         </div>
         <div className="assignment-actions">
-          <button className="primary" disabled={submitted} onClick={onSubmit}>
-            Submit Paper
+          <button className="primary" disabled={submitted || submitLoading} onClick={onSubmit}>
+            {submitLoading ? "Submitting..." : "Submit Paper"}
           </button>
         </div>
       </section>
@@ -1326,8 +1365,10 @@ function ProfessorView({
   professorState,
   assignmentForm,
   enrollmentForm,
+  professorDetailMode,
   observations,
   evidenceTags,
+  behavioralRisk,
   pasteEventCards,
   timelineMarkers,
   replayFrame,
@@ -1347,8 +1388,10 @@ function ProfessorView({
   professorState: ProfessorState;
   assignmentForm: { title: string; prompt: string; dueAt: string };
   enrollmentForm: { displayName: string; email: string };
+  professorDetailMode: boolean;
   observations: Observation[];
   evidenceTags: ProfessorReportResponse["tags"];
+  behavioralRisk: ProfessorReportResponse["behavioralRisk"] | null;
   pasteEventCards: ProfessorReportResponse["pasteEventCards"];
   timelineMarkers: ProfessorReportResponse["timelineMarkers"];
   replayFrame: ReplayFrame | undefined;
@@ -1371,6 +1414,8 @@ function ProfessorView({
   const submittedCount = professorState.submissions.filter((submission) => submission.submittedAt).length;
   const readyCount = professorState.submissions.filter((submission) => submission.sessionId).length;
   const selectedAssignment = professorState.assignments.find((assignment) => assignment.id === professorState.selectedAssignmentId);
+  const selectedSubmission = professorState.submissions.find((submission) => submission.sessionId === professorState.selectedSessionId);
+  const reviewableSubmissions = professorState.submissions.filter((submission) => submission.sessionId && submission.submittedAt);
   const sortedEvidenceTags = useMemo(() => {
     const filtered = tagCategory === "all" ? evidenceTags : evidenceTags.filter((tag) => tag.category === tagCategory);
     return [...filtered].sort((a, b) => {
@@ -1384,9 +1429,19 @@ function ProfessorView({
     <section className="view active classroom-dashboard professor-dashboard">
       <section className="course-banner professor-banner">
         <div>
-          <p className="course-label">Professor dashboard</p>
-          <h2>{selectedAssignment?.title ?? "Choose a classwork item"}</h2>
-          <p>{selectedAssignment?.prompt ?? "Create an assignment or select one to review student writing evidence."}</p>
+          <p className="course-label">{professorDetailMode ? "Submission review" : "Professor dashboard"}</p>
+          <h2>
+            {professorDetailMode
+              ? selectedSubmission?.studentName ?? "Open a submitted assignment"
+              : selectedAssignment?.title ?? "Choose a classwork item"}
+          </h2>
+          <p>
+            {professorDetailMode
+              ? selectedAssignment
+                ? `${selectedAssignment.title}${selectedSubmission?.submittedAt ? ` · Submitted ${new Date(selectedSubmission.submittedAt).toLocaleDateString()}` : ""}`
+                : "Load a submitted session to review neutral evidence."
+              : selectedAssignment?.prompt ?? "Create an assignment or select one to review student writing evidence."}
+          </p>
         </div>
         <dl className="course-stats">
           <div><dt>Students</dt><dd>{professorState.roster.length}</dd></div>
@@ -1394,337 +1449,369 @@ function ProfessorView({
           <div><dt>Submitted</dt><dd>{submittedCount}</dd></div>
         </dl>
       </section>
+      {professorDetailMode ? (
+        <>
+          <section className="panel classroom-card professor-detail-nav">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Back to dashboard</p>
+                <h3>{selectedAssignment?.title ?? "Professor dashboard"}</h3>
+              </div>
+              <Link className="ghost compact" href="/professor">All classwork</Link>
+            </div>
+          </section>
 
-      <section className="dashboard-grid classroom-management-grid">
-        <section className="panel classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Classwork</p>
-              <h2>Assignments</h2>
-            </div>
-          </div>
-          <form className="stacked-form" onSubmit={onCreateAssignment}>
-            <label htmlFor="assignment-title">Title</label>
-            <input
-              id="assignment-title"
-              value={assignmentForm.title}
-              onChange={(event) => onAssignmentFormChange({ ...assignmentForm, title: event.target.value })}
-            />
-            <label htmlFor="assignment-prompt">Prompt</label>
-            <textarea
-              id="assignment-prompt"
-              value={assignmentForm.prompt}
-              onChange={(event) => onAssignmentFormChange({ ...assignmentForm, prompt: event.target.value })}
-            />
-            <label htmlFor="assignment-due">Due date</label>
-            <input
-              id="assignment-due"
-              type="date"
-              value={assignmentForm.dueAt}
-              onChange={(event) => onAssignmentFormChange({ ...assignmentForm, dueAt: event.target.value })}
-            />
-            <button className="primary" disabled={professorState.assignmentCreateLoading} type="submit">
-              {professorState.assignmentCreateLoading ? "Creating..." : "Create Assignment"}
-            </button>
-            {professorState.assignmentCreateError ? <p className="sync-error">{professorState.assignmentCreateError}</p> : null}
-          </form>
-          {professorState.assignmentsLoading ? (
-            <div className="report-empty">Loading assignments...</div>
-          ) : professorState.assignmentsError ? (
-            <div className="report-empty">{professorState.assignmentsError}</div>
-          ) : professorState.assignments.length ? (
-            <div className="select-list">
-              {professorState.assignments.map((assignment) => (
-                <button
-                  className={assignment.id === professorState.selectedAssignmentId ? "list-button active" : "list-button"}
-                  key={assignment.id}
-                  onClick={() => onSelectAssignment(assignment.id)}
-                >
-                  <span>{assignment.title}</span>
-                  <small>{assignment.dueAt ? `Due ${new Date(assignment.dueAt).toLocaleDateString()} - ${assignment.prompt}` : assignment.prompt}</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="report-empty">No assignments available.</div>
-          )}
-        </section>
-
-        <section className="panel classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">People</p>
-              <h2>Students</h2>
-            </div>
-          </div>
-          <form className="stacked-form compact-form" onSubmit={onEnrollStudent}>
-            <label htmlFor="student-name">Student name</label>
-            <input
-              id="student-name"
-              value={enrollmentForm.displayName}
-              onChange={(event) => onEnrollmentFormChange({ ...enrollmentForm, displayName: event.target.value })}
-            />
-            <label htmlFor="student-email">Student email</label>
-            <input
-              id="student-email"
-              type="email"
-              value={enrollmentForm.email}
-              onChange={(event) => onEnrollmentFormChange({ ...enrollmentForm, email: event.target.value })}
-            />
-            <button className="primary" disabled={!professorState.selectedAssignmentId || professorState.enrollmentLoading} type="submit">
-              {professorState.enrollmentLoading ? "Saving..." : "Enroll Student"}
-            </button>
-            {professorState.enrollmentError ? <p className="sync-error">{professorState.enrollmentError}</p> : null}
-          </form>
-          {professorState.rosterLoading ? (
-            <div className="report-empty">Loading roster...</div>
-          ) : professorState.rosterError ? (
-            <div className="report-empty">{professorState.rosterError}</div>
-          ) : professorState.roster.length ? (
-            <div className="roster-list">
-              {professorState.roster.map((student) => (
-                <div className="roster-row" key={student.studentId}>
-                  <div>
-                    <strong>{student.studentName}</strong>
-                    <span>{student.studentEmail}</span>
-                  </div>
-                  <button
-                    className="text-button"
-                    disabled={professorState.enrollmentLoading}
-                    onClick={() => onRemoveStudent(student.studentId)}
-                    type="button"
-                  >
-                    Remove
-                  </button>
+          <section className="report-grid">
+            <section className="panel classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Professor Review</p>
+                  <h2>Neutral Evidence Report</h2>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="report-empty">No students enrolled.</div>
-          )}
-        </section>
-
-        <section className="panel review-summary classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Review Queue</p>
-              <h2>Submission Status</h2>
-            </div>
-          </div>
-          <dl className="metrics compact-metrics">
-            <div><dt>Total</dt><dd>{professorState.submissions.length}</dd></div>
-            <div><dt>Started</dt><dd>{readyCount}</dd></div>
-            <div><dt>Submitted</dt><dd>{submittedCount}</dd></div>
-            <div><dt>Tags</dt><dd>{evidenceTags.length}</dd></div>
-          </dl>
-        </section>
-      </section>
-
-      <section className="dashboard-grid classroom-stream-grid">
-        <section className="panel classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Student Work</p>
-              <h2>Submissions</h2>
-            </div>
-          </div>
-          {professorState.submissionsLoading ? (
-            <div className="report-empty">Loading submissions...</div>
-          ) : professorState.submissionsError ? (
-            <div className="report-empty">{professorState.submissionsError}</div>
-          ) : professorState.submissions.length ? (
-            <div className="select-list">
-              {professorState.submissions.map((submission) => (
-                <button
-                  className={submission.sessionId === professorState.selectedSessionId ? "list-button active" : "list-button"}
-                  disabled={!submission.sessionId}
-                  key={`${submission.studentId}-${submission.sessionId || "not-started"}`}
-                  onClick={() => submission.sessionId ? onSelectSession(submission.sessionId) : undefined}
-                >
-                  <span>{submission.studentName}</span>
-                  <small>{submission.status.replace("_", " ")} {submission.submittedAt ? `- ${new Date(submission.submittedAt).toLocaleDateString()}` : submission.studentEmail}</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="report-empty">No submissions for this assignment.</div>
-          )}
-        </section>
-      </section>
-
-      <section className="report-grid">
-        <section className="panel classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Professor Review</p>
-              <h2>Neutral Evidence Report</h2>
-            </div>
-            {professorState.selectedSessionId ? (
-              <div className="export-actions" aria-label="Export report">
-                <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=html`}>
-                  HTML
-                </a>
-                <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=csv`}>
-                  CSV
-                </a>
-                <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=pdf`}>
-                  PDF
-                </a>
+                {professorState.selectedSessionId ? (
+                  <div className="export-actions" aria-label="Export report">
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=html`}>
+                      HTML
+                    </a>
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=csv`}>
+                      CSV
+                    </a>
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=pdf`}>
+                      PDF
+                    </a>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
-          {professorState.reportLoading ? (
-            <div className="report-empty">Loading report...</div>
-          ) : professorState.reportError ? (
-            <div className="report-empty">{professorState.reportError}</div>
-          ) : evidenceTags.length ? (
-            <>
-              <div className="tag-toolbar" aria-label="Evidence tag controls">
-                <label htmlFor="tag-category">Tag</label>
-                <select id="tag-category" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
-                  <option value="all">All tags</option>
-                  {tagCategories.map((category) => (
-                    <option key={category} value={category}>{category}</option>
-                  ))}
-                </select>
-                <label htmlFor="tag-sort">Sort</label>
-                <select id="tag-sort" value={tagSort} onChange={(event) => setTagSort(event.target.value)}>
-                  <option value="category">Tag category</option>
-                  <option value="label">Tag label</option>
-                  <option value="time">Timeline time</option>
-                </select>
-              </div>
-              <div className="event-list">
-                {sortedEvidenceTags.map((tag) => (
-                  <article className="event-card" key={tag.id}>
-                    <div className="tag-card-header">
-                      <p className="eyebrow">{tag.category}</p>
-                      {tag.at !== undefined ? <span>{new Date(tag.at).toLocaleTimeString()}</span> : null}
+              {professorState.reportLoading ? (
+                <div className="report-empty">Loading report...</div>
+              ) : professorState.reportError ? (
+                <div className="report-empty">{professorState.reportError}</div>
+              ) : evidenceTags.length ? (
+                <>
+                  {behavioralRisk ? (
+                    <div className="observation-strip">
+                      <p className="eyebrow">Behavioral Indicators</p>
+                      <p>
+                        <strong>{behavioralRisk.totalPoints} risk points:</strong>{" "}
+                        {behavioralRisk.highCount} high, {behavioralRisk.mediumCount} medium, {behavioralRisk.positiveCount} positive indicators.
+                      </p>
                     </div>
-                    <h3>{tag.label}</h3>
-                    <p>{tag.detail}</p>
-                  </article>
-                ))}
-              </div>
-              {observations.length ? (
-                <div className="observation-strip">
-                  <p className="eyebrow">Report Observations</p>
+                  ) : null}
+                  <div className="tag-toolbar" aria-label="Evidence tag controls">
+                    <label htmlFor="tag-category">Tag</label>
+                    <select id="tag-category" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
+                      <option value="all">All tags</option>
+                      {tagCategories.map((category) => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </select>
+                    <label htmlFor="tag-sort">Sort</label>
+                    <select id="tag-sort" value={tagSort} onChange={(event) => setTagSort(event.target.value)}>
+                      <option value="category">Tag category</option>
+                      <option value="label">Tag label</option>
+                      <option value="time">Timeline time</option>
+                    </select>
+                  </div>
+                  <div className="event-list">
+                    {sortedEvidenceTags.map((tag) => (
+                      <article className="event-card" key={tag.id}>
+                        <div className="tag-card-header">
+                          <p className="eyebrow">{tag.category}</p>
+                          {tag.at !== undefined ? <span>{new Date(tag.at).toLocaleTimeString()}</span> : null}
+                        </div>
+                        <h3>{tag.label}</h3>
+                        <p>{tag.detail}</p>
+                      </article>
+                    ))}
+                  </div>
+                  {observations.length ? (
+                    <div className="observation-strip">
+                      <p className="eyebrow">Report Observations</p>
+                      {observations.map((item, index) => (
+                        <p key={`${item.title}-${index}`}><strong>{item.title}:</strong> {item.detail}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : observations.length ? (
+                <div className="event-list">
                   {observations.map((item, index) => (
-                    <p key={`${item.title}-${index}`}><strong>{item.title}:</strong> {item.detail}</p>
+                    <article className="event-card" key={`${item.title}-${index}`}>
+                      <p className="eyebrow">{item.group}</p>
+                      <h3>{item.title}</h3>
+                      <p>{item.detail}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="report-empty">Open a submitted session to generate a report.</div>
+              )}
+            </section>
+
+            <section className="panel replay-panel classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Rewind</p>
+                  <h2>Timeline Replay</h2>
+                </div>
+                <button className="ghost" disabled={!activeReplayFrames.length} onClick={onPlayReplay}>
+                  {isPlaying ? "Pause" : "Play"}
+                </button>
+              </div>
+              <input
+                id="replay-slider"
+                type="range"
+                min="0"
+                max={Math.max(0, activeReplayFrames.length - 1)}
+                value={replayIndex}
+                onChange={(event) => onReplayIndexChange(Number(event.target.value))}
+              />
+              {timelineMarkers.length ? (
+                <div className="timeline-marker-rail" aria-label="Report timeline markers">
+                  {timelineMarkers.map((marker) => (
+                    <button
+                      className={`timeline-marker ${marker.kind}`}
+                      disabled={marker.replayFrameIndex === null}
+                      key={marker.id}
+                      onClick={() => marker.replayFrameIndex !== null ? onReplayIndexChange(marker.replayFrameIndex) : undefined}
+                      type="button"
+                    >
+                      <span>{new Date(marker.at).toLocaleTimeString()}</span>
+                      <strong>{marker.label}</strong>
+                    </button>
                   ))}
                 </div>
               ) : null}
-            </>
-          ) : observations.length ? (
-            <div className="event-list">
-              {observations.map((item, index) => (
-                <article className="event-card" key={`${item.title}-${index}`}>
-                  <p className="eyebrow">{item.group}</p>
-                  <h3>{item.title}</h3>
-                  <p>{item.detail}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="report-empty">Open a submitted session to generate a report.</div>
-          )}
-        </section>
+              <div className="replay-output">
+                {replayFrame ? `[${new Date(replayFrame.at).toLocaleTimeString()}] ${replayFrame.label}\n\n${replayFrame.text}` : ""}
+              </div>
+            </section>
+          </section>
 
-        <section className="panel replay-panel classroom-card">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Rewind</p>
-              <h2>Timeline Replay</h2>
-            </div>
-            <button className="ghost" disabled={!activeReplayFrames.length} onClick={onPlayReplay}>
-              {isPlaying ? "Pause" : "Play"}
-            </button>
-          </div>
-          <input
-            id="replay-slider"
-            type="range"
-            min="0"
-            max={Math.max(0, activeReplayFrames.length - 1)}
-            value={replayIndex}
-            onChange={(event) => onReplayIndexChange(Number(event.target.value))}
-          />
-          {timelineMarkers.length ? (
-            <div className="timeline-marker-rail" aria-label="Report timeline markers">
-              {timelineMarkers.map((marker) => (
-                <button
-                  className={`timeline-marker ${marker.kind}`}
-                  disabled={marker.replayFrameIndex === null}
-                  key={marker.id}
-                  onClick={() => marker.replayFrameIndex !== null ? onReplayIndexChange(marker.replayFrameIndex) : undefined}
-                  type="button"
-                >
-                  <span>{new Date(marker.at).toLocaleTimeString()}</span>
-                  <strong>{marker.label}</strong>
-                </button>
-              ))}
-            </div>
+          {professorState.report ? (
+            <section className="evidence-grid">
+              <section className="panel paste-card-panel classroom-card">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Paste Cards</p>
+                    <h2>Paste Event Review</h2>
+                  </div>
+                </div>
+                {pasteEventCards.length ? (
+                  <div className="paste-card-list">
+                    {pasteEventCards.map((card) => (
+                      <article className="paste-card" key={card.id}>
+                        <div>
+                          <p className="eyebrow">{new Date(card.at).toLocaleTimeString()}</p>
+                          <h3>{card.title}</h3>
+                          <p>{card.detail}</p>
+                        </div>
+                        <dl>
+                          <div><dt>Words</dt><dd>{card.wordCount}</dd></div>
+                          <div><dt>Characters</dt><dd>{card.characterCount}</dd></div>
+                        </dl>
+                        <blockquote>{card.textPreview || "No pasted text preview available."}</blockquote>
+                        {card.replayFrameIndex !== null ? (
+                          <button className="text-button" onClick={() => onReplayIndexChange(card.replayFrameIndex as number)} type="button">
+                            Open in replay
+                          </button>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="report-empty">No paste events recorded for this submission.</div>
+                )}
+              </section>
+              <section className="panel classroom-card">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Submitted Paper</p>
+                    <h2>Locked Text</h2>
+                  </div>
+                </div>
+                <div className="text-evidence">{professorState.report.submittedText || "No submitted text returned."}</div>
+              </section>
+              <section className="panel classroom-card">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Timed Summary</p>
+                    <h2>Comprehension Check</h2>
+                  </div>
+                </div>
+                <div className="text-evidence">{professorState.report.summaryText || "No timed summary returned."}</div>
+              </section>
+            </section>
           ) : null}
-          <div className="replay-output">
-            {replayFrame ? `[${new Date(replayFrame.at).toLocaleTimeString()}] ${replayFrame.label}\n\n${replayFrame.text}` : ""}
-          </div>
-        </section>
-      </section>
+        </>
+      ) : (
+        <>
+          <section className="dashboard-grid classroom-management-grid">
+            <section className="panel classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Classwork</p>
+                  <h2>Assignments</h2>
+                </div>
+              </div>
+              <form className="stacked-form" onSubmit={onCreateAssignment}>
+                <label htmlFor="assignment-title">Title</label>
+                <input
+                  id="assignment-title"
+                  value={assignmentForm.title}
+                  onChange={(event) => onAssignmentFormChange({ ...assignmentForm, title: event.target.value })}
+                />
+                <label htmlFor="assignment-prompt">Prompt</label>
+                <textarea
+                  id="assignment-prompt"
+                  value={assignmentForm.prompt}
+                  onChange={(event) => onAssignmentFormChange({ ...assignmentForm, prompt: event.target.value })}
+                />
+                <label htmlFor="assignment-due">Due date</label>
+                <input
+                  id="assignment-due"
+                  type="date"
+                  value={assignmentForm.dueAt}
+                  onChange={(event) => onAssignmentFormChange({ ...assignmentForm, dueAt: event.target.value })}
+                />
+                <button className="primary" disabled={professorState.assignmentCreateLoading} type="submit">
+                  {professorState.assignmentCreateLoading ? "Creating..." : "Create Assignment"}
+                </button>
+                {professorState.assignmentCreateError ? <p className="sync-error">{professorState.assignmentCreateError}</p> : null}
+              </form>
+              {professorState.assignmentsLoading ? (
+                <div className="report-empty">Loading assignments...</div>
+              ) : professorState.assignmentsError ? (
+                <div className="report-empty">{professorState.assignmentsError}</div>
+              ) : professorState.assignments.length ? (
+                <div className="select-list">
+                  {professorState.assignments.map((assignment) => (
+                    <button
+                      className={assignment.id === professorState.selectedAssignmentId ? "list-button active" : "list-button"}
+                      key={assignment.id}
+                      onClick={() => onSelectAssignment(assignment.id)}
+                      type="button"
+                    >
+                      <span>{assignment.title}</span>
+                      <small>{assignment.dueAt ? `Due ${new Date(assignment.dueAt).toLocaleDateString()} - ${assignment.prompt}` : assignment.prompt}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="report-empty">No assignments available.</div>
+              )}
+            </section>
 
-      {professorState.report ? (
-        <section className="evidence-grid">
-          <section className="panel paste-card-panel classroom-card">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Paste Cards</p>
-                <h2>Paste Event Review</h2>
+            <section className="panel classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">People</p>
+                  <h2>Students</h2>
+                </div>
               </div>
-            </div>
-            {pasteEventCards.length ? (
-              <div className="paste-card-list">
-                {pasteEventCards.map((card) => (
-                  <article className="paste-card" key={card.id}>
-                    <div>
-                      <p className="eyebrow">{new Date(card.at).toLocaleTimeString()}</p>
-                      <h3>{card.title}</h3>
-                      <p>{card.detail}</p>
-                    </div>
-                    <dl>
-                      <div><dt>Words</dt><dd>{card.wordCount}</dd></div>
-                      <div><dt>Characters</dt><dd>{card.characterCount}</dd></div>
-                    </dl>
-                    <blockquote>{card.textPreview || "No pasted text preview available."}</blockquote>
-                    {card.replayFrameIndex !== null ? (
-                      <button className="text-button" onClick={() => onReplayIndexChange(card.replayFrameIndex as number)} type="button">
-                        Open in replay
+              <form className="stacked-form compact-form" onSubmit={onEnrollStudent}>
+                <label htmlFor="student-name">Student name</label>
+                <input
+                  id="student-name"
+                  value={enrollmentForm.displayName}
+                  onChange={(event) => onEnrollmentFormChange({ ...enrollmentForm, displayName: event.target.value })}
+                />
+                <label htmlFor="student-email">Student email</label>
+                <input
+                  id="student-email"
+                  type="email"
+                  value={enrollmentForm.email}
+                  onChange={(event) => onEnrollmentFormChange({ ...enrollmentForm, email: event.target.value })}
+                />
+                <button className="primary" disabled={!professorState.selectedAssignmentId || professorState.enrollmentLoading} type="submit">
+                  {professorState.enrollmentLoading ? "Saving..." : "Enroll Student"}
+                </button>
+                {professorState.enrollmentError ? <p className="sync-error">{professorState.enrollmentError}</p> : null}
+              </form>
+              {professorState.rosterLoading ? (
+                <div className="report-empty">Loading roster...</div>
+              ) : professorState.rosterError ? (
+                <div className="report-empty">{professorState.rosterError}</div>
+              ) : professorState.roster.length ? (
+                <div className="roster-list">
+                  {professorState.roster.map((student) => (
+                    <div className="roster-row" key={student.studentId}>
+                      <div>
+                        <strong>{student.studentName}</strong>
+                        <span>{student.studentEmail}</span>
+                      </div>
+                      <button
+                        className="text-button"
+                        disabled={professorState.enrollmentLoading}
+                        onClick={() => onRemoveStudent(student.studentId)}
+                        type="button"
+                      >
+                        Remove
                       </button>
-                    ) : null}
-                  </article>
-                ))}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="report-empty">No students enrolled.</div>
+              )}
+            </section>
+
+            <section className="panel review-summary classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Review Queue</p>
+                  <h2>Submission Status</h2>
+                </div>
               </div>
-            ) : (
-              <div className="report-empty">No paste events recorded for this submission.</div>
-            )}
+              <dl className="metrics compact-metrics">
+                <div><dt>Total</dt><dd>{professorState.submissions.length}</dd></div>
+                <div><dt>Started</dt><dd>{readyCount}</dd></div>
+                <div><dt>Submitted</dt><dd>{submittedCount}</dd></div>
+                <div><dt>Ready</dt><dd>{reviewableSubmissions.length}</dd></div>
+              </dl>
+              <p className="note">Submitted work opens in a separate evidence review page.</p>
+            </section>
           </section>
-          <section className="panel classroom-card">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Submitted Paper</p>
-                <h2>Locked Text</h2>
+
+          <section className="dashboard-grid classroom-stream-grid">
+            <section className="panel classroom-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Student Work</p>
+                  <h2>Submissions</h2>
+                </div>
               </div>
-            </div>
-            <div className="text-evidence">{professorState.report.submittedText || "No submitted text returned."}</div>
+              {professorState.submissionsLoading ? (
+                <div className="report-empty">Loading submissions...</div>
+              ) : professorState.submissionsError ? (
+                <div className="report-empty">{professorState.submissionsError}</div>
+              ) : professorState.submissions.length ? (
+                <div className="select-list">
+                  {professorState.submissions.map((submission) => {
+                    const reviewHref = submission.sessionId
+                      ? `/professor/submissions/${encodeURIComponent(submission.sessionId)}?assignmentId=${encodeURIComponent(professorState.selectedAssignmentId)}`
+                      : "";
+
+                    return submission.sessionId && submission.submittedAt ? (
+                      <Link className="list-button list-link" href={reviewHref} key={`${submission.studentId}-${submission.sessionId}`}>
+                        <span>{submission.studentName}</span>
+                        <small>{submission.status.replace("_", " ")} - {new Date(submission.submittedAt).toLocaleDateString()}</small>
+                      </Link>
+                    ) : (
+                      <div className="list-button muted" key={`${submission.studentId}-${submission.sessionId || "not-started"}`}>
+                        <span>{submission.studentName}</span>
+                        <small>{submission.status.replace("_", " ")} {submission.submittedAt ? `- ${new Date(submission.submittedAt).toLocaleDateString()}` : submission.studentEmail}</small>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="report-empty">No submissions for this assignment.</div>
+              )}
+            </section>
           </section>
-          <section className="panel classroom-card">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Timed Summary</p>
-                <h2>Comprehension Check</h2>
-              </div>
-            </div>
-            <div className="text-evidence">{professorState.report.summaryText || "No timed summary returned."}</div>
-          </section>
-        </section>
-      ) : null}
+        </>
+      )}
     </section>
   );
 }

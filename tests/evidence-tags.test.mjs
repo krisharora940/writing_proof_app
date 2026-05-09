@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  generateBehavioralRiskEvidenceTags,
   generateObservationEvidenceTags,
   generateProcessEvidenceTags,
   generateSummaryEvidenceTags,
@@ -23,6 +24,24 @@ test("generateProcessEvidenceTags creates neutral factual paste and revision tag
   assert.ok(tags.some((tag) => tag.label === "Large paste event"));
   assert.ok(tags.some((tag) => tag.label === "Text unchanged after paste"));
   assert.ok(tags.every((tag) => !/score|suspicion|cheat/i.test(`${tag.label} ${tag.detail}`)));
+});
+
+test("generateBehavioralRiskEvidenceTags maps severity signals to neutral tags", () => {
+  const tags = generateBehavioralRiskEvidenceTags([
+    {
+      id: "high-low-active-typing-share",
+      severity: "high",
+      label: "Low active typing share",
+      detail: "2m of active writing was recorded across 40m of session time.",
+      points: 3
+    }
+  ]);
+  const grouped = groupEvidenceTags(tags);
+
+  assert.equal(tags[0].label, "High: Low active typing share");
+  assert.equal(tags[0].category, "Behavioral Indicator");
+  assert.equal(grouped["Behavioral Indicator"].length, 1);
+  assert.ok(tags.every((tag) => !/suspicion|cheat|misconduct/i.test(`${tag.label} ${tag.detail}`)));
 });
 
 test("generateSummaryEvidenceTags maps comparison output to grouped evidence tags", () => {
