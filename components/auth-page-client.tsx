@@ -57,6 +57,9 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
   }
 
   const title = mode === "login" ? "Log in to AuthorCheck" : "Create an AuthorCheck workspace";
+  const subtitle = mode === "login"
+    ? "Use your existing student or professor credentials."
+    : "Create a professor workspace or join a class with a student invite.";
 
   return (
     <main className="auth-page">
@@ -71,16 +74,20 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
         </nav>
       </header>
 
-      <section className="auth-shell">
+      <section className="auth-shell portal-auth-shell">
         <div className="auth-copy">
-          <p className="eyebrow">Role-based access</p>
           <h1>{title}</h1>
-          <p>
-            Create a professor workspace or accept a student invite. Sessions use signed, HTTP-only cookies.
-          </p>
+          <p>{subtitle}</p>
         </div>
 
         <form className="auth-card" onSubmit={submit}>
+          <div className="auth-card-heading">
+            <span className="auth-card-icon" aria-hidden="true">{role === "student" ? "S" : "P"}</span>
+            <div>
+              <h2>{role === "student" ? "Student access" : "Professor access"}</h2>
+              <p>Sessions use signed, HTTP-only cookies.</p>
+            </div>
+          </div>
           <div className="segmented-control" aria-label="Choose role">
             <button className={role === "student" ? "active" : ""} onClick={() => chooseRole("student")} type="button">
               Student

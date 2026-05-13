@@ -1,5 +1,5 @@
-import AuthPageClient from "@/components/auth-page-client";
+import { AuthorCheckApp } from "@/components/figma-authorcheck-client";
 
 export default function LoginPage() {
-  return <AuthPageClient mode="login" />;
+  return <AuthorCheckApp page="landing" />;
 }

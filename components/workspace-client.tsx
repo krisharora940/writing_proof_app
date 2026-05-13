@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MutableRefObject, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type MutableRefObject, type ReactNode } from "react";
 import {
   activeWritingMs,
   analyzeProcess,
@@ -157,6 +157,7 @@ export default function WorkspaceClient({
 
   const activeRole = currentUser?.role;
   const showWorkspaceNavLinks = !currentUser;
+  const workspaceRole = requiredRole ?? activeRole;
 
   const handleAccessError = useCallback((status: number, fallback: string) => {
     if (status === 401) {
@@ -312,7 +313,8 @@ export default function WorkspaceClient({
     setAccessMessage("");
     setSignInError("");
     if (requiredRole && user.role !== requiredRole) {
-      router.replace(`/${user.role}`);
+      setAccessState("forbidden");
+      setAccessMessage(`This is the ${formatRole(requiredRole).toLowerCase()} portal. Sign out and use a ${formatRole(requiredRole).toLowerCase()} account to continue.`);
       return;
     }
     if (user.role === "student") {
@@ -994,7 +996,7 @@ export default function WorkspaceClient({
       <header className="topbar">
         <div className="brand-block">
           <p className="eyebrow">AuthorCheck</p>
-          <h1>{activeRole === "professor" ? "Professor evidence workspace" : "Student writing workspace"}</h1>
+          <h1>{workspaceRole === "professor" ? "Professor evidence workspace" : "Student writing workspace"}</h1>
         </div>
         <nav className="product-nav" aria-label="Primary navigation">
           <Link href="/">Home</Link>
@@ -1117,10 +1119,10 @@ export default function WorkspaceClient({
         <div className="modal-backdrop" role="presentation">
           <section className="dialog-card modal" role="dialog" aria-modal="true" aria-labelledby="summary-title">
             <div>
-              <p className="eyebrow">Timed Summary</p>
-              <h2 id="summary-title">Summarize your submitted paper</h2>
+              <p className="eyebrow">Comprehension Check</p>
+              <h2 id="summary-title">Complete the post-submission quiz</h2>
               <p className="note">
-                You have <span>{formatTimer(remainingSeconds)}</span>. Use bullet points or short paragraphs. The paper is locked during this step.
+                You have <span>{formatTimer(remainingSeconds)}</span>. Explain the main argument, key claims, and evidence from memory.
               </p>
             </div>
             <textarea
@@ -1132,7 +1134,7 @@ export default function WorkspaceClient({
                 setSummaryDraft(event.target.value);
               }}
             />
-            <button className="primary" onClick={completeSummary}>Complete Summary</button>
+            <button className="primary" onClick={completeSummary}>Submit Quiz</button>
           </section>
         </div>
       ) : null}
@@ -1190,6 +1192,10 @@ function StudentView({
   pendingPasteRef: MutableRefObject<{ words: number } | null>;
 }) {
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const completedAssignments = assignments.filter((assignment) => assignment.submittedAt).length;
+  const progressPercent = assignments.length ? Math.round((completedAssignments / assignments.length) * 100) : 0;
+  const upcomingAssignments = assignments.filter((assignment) => !assignment.submittedAt).slice(0, 3);
+  const dueDateConflicts = findDueDateConflicts(assignments);
 
   function applyFormat(kind: TextFormatKind) {
     if (!studentState || submitted || !editorRef.current) return;
@@ -1226,11 +1232,73 @@ function StudentView({
         </div>
       </section>
 
+      <section className="student-dashboard-grid">
+        <section className="panel classroom-card quick-actions-card">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Quick Actions</p>
+              <h2>Student Dashboard</h2>
+            </div>
+          </div>
+          <div className="quick-action-list">
+            <a className="quick-action active" href="#paper-editor">
+              <span>Continue writing</span>
+              <strong>{countWords(studentState.paperText)} words</strong>
+            </a>
+            <button className="quick-action" disabled={submitted || submitLoading} onClick={onSubmit} type="button">
+              <span>Final review</span>
+              <strong>{submitted ? "Submitted" : "Ready when you are"}</strong>
+            </button>
+            <a className="quick-action" href="#student-replay-slider">
+              <span>Recent feedback</span>
+              <strong>{studentState.summaryCompletedAt ? "Quiz complete" : "No returned feedback"}</strong>
+            </a>
+          </div>
+        </section>
+
+        <section className="panel classroom-card calendar-card">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Calendar</p>
+              <h2>Due Dates</h2>
+            </div>
+            {dueDateConflicts ? <span className="status-pill warning">Conflict</span> : <span className="status-pill">Clear</span>}
+          </div>
+          <div className="calendar-list">
+            {upcomingAssignments.length ? upcomingAssignments.map((assignment) => (
+              <button
+                className={assignment.id === studentState.assignment.id ? "calendar-item active" : "calendar-item"}
+                key={assignment.id}
+                onClick={() => onSelectAssignment(assignment.id)}
+                type="button"
+              >
+                <span>{assignment.dueAt ? new Date(assignment.dueAt).toLocaleDateString() : "No due date"}</span>
+                <strong>{assignment.title}</strong>
+              </button>
+            )) : <div className="report-empty">No upcoming assignments.</div>}
+          </div>
+        </section>
+
+        <section className="panel classroom-card progress-card">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Classes</p>
+              <h2>Progress</h2>
+            </div>
+          </div>
+          <div className="progress-ring" style={{ "--progress": `${progressPercent}%` } as CSSProperties}>
+            <strong>{progressPercent}%</strong>
+            <span>Complete</span>
+          </div>
+          <p className="note">{assignments.length ? `${completedAssignments} of ${assignments.length} assignments submitted.` : "No classwork assigned yet."}</p>
+        </section>
+      </section>
+
       <section className="student-assignment-shell">
         <section className="panel classroom-card">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">Classwork</p>
+              <p className="eyebrow">Class Cards</p>
               <h2>Assigned Work</h2>
             </div>
           </div>
@@ -1247,7 +1315,7 @@ function StudentView({
                   onClick={() => onSelectAssignment(assignment.id)}
                   type="button"
                 >
-                  <span>{assignment.title}</span>
+                  <span>{assignment.title}{assignment.submittedAt ? "" : " · New"}</span>
                   <small>{formatAssignmentMeta(assignment)}</small>
                 </button>
               ))}
@@ -1314,6 +1382,10 @@ function StudentView({
                 <span className="toolbar-underline">U</span>
               </button>
             </div>
+            <div className="attachment-strip" aria-label="Attachment support">
+              <label htmlFor="paper-attachments">Attachments</label>
+              <input id="paper-attachments" disabled={submitted} multiple type="file" />
+            </div>
             <textarea
               ref={editorRef}
               id="paper-editor"
@@ -1331,6 +1403,25 @@ function StudentView({
               }}
               onChange={(event) => onChange(event.target.value)}
             />
+          </section>
+
+          <section className="panel classroom-card final-review-card">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Final Review</p>
+                <h2>Submission Confirmation</h2>
+              </div>
+              <span className="status-pill">{submitted ? "Locked" : "Draft"}</span>
+            </div>
+            <dl className="metrics compact-metrics">
+              <div><dt>Words</dt><dd>{countWords(studentState.paperText)}</dd></div>
+              <div><dt>Autosave</dt><dd>{serverSyncError ? "Issue" : "On"}</dd></div>
+              <div><dt>Replay</dt><dd>{activeReplayFrames.length}</dd></div>
+              <div><dt>Quiz</dt><dd>{studentState.summaryCompletedAt ? "Done" : "Next"}</dd></div>
+            </dl>
+            <button className="primary" disabled={submitted || submitLoading} onClick={onSubmit}>
+              {submitLoading ? "Submitting..." : "Review and Submit"}
+            </button>
           </section>
 
           <section className="panel replay-panel compact-replay classroom-card">
@@ -1416,6 +1507,7 @@ function ProfessorView({
   const selectedAssignment = professorState.assignments.find((assignment) => assignment.id === professorState.selectedAssignmentId);
   const selectedSubmission = professorState.submissions.find((submission) => submission.sessionId === professorState.selectedSessionId);
   const reviewableSubmissions = professorState.submissions.filter((submission) => submission.sessionId && submission.submittedAt);
+  const authorCheck = professorState.report?.authorCheck;
   const sortedEvidenceTags = useMemo(() => {
     const filtered = tagCategory === "all" ? evidenceTags : evidenceTags.filter((tag) => tag.category === tagCategory);
     return [...filtered].sort((a, b) => {
@@ -1461,42 +1553,61 @@ function ProfessorView({
             </div>
           </section>
 
-          <section className="report-grid">
-            <section className="panel classroom-card">
+          <section className="review-workbench">
+            <section className="panel classroom-card submission-panel">
               <div className="panel-header">
                 <div>
-                  <p className="eyebrow">Professor Review</p>
-                  <h2>Neutral Evidence Report</h2>
+                  <p className="eyebrow">Submission</p>
+                  <h2>Submitted Paper</h2>
+                </div>
+                <span className="status-pill">Inline comments</span>
+              </div>
+              {professorState.reportLoading ? (
+                <div className="report-empty">Loading submission...</div>
+              ) : professorState.reportError ? (
+                <div className="report-empty">{professorState.reportError}</div>
+              ) : professorState.report ? (
+                <>
+                  <div className="text-evidence annotated-paper">{professorState.report.submittedText || "No submitted text returned."}</div>
+                  <div className="inline-comment-list">
+                    <article>
+                      <strong>Comment 1</strong>
+                      <p>Use inline notes here while reviewing process evidence and final text.</p>
+                    </article>
+                    <article>
+                      <strong>Comment 2</strong>
+                      <p>Source highlights are linked to paste events and replay markers.</p>
+                    </article>
+                  </div>
+                </>
+              ) : (
+                <div className="report-empty">Open a submitted session to review the paper.</div>
+              )}
+            </section>
+
+            <aside className="panel classroom-card algorithm-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">AuthorCheck System</p>
+                  <h2>Algorithm Report</h2>
                 </div>
                 {professorState.selectedSessionId ? (
                   <div className="export-actions" aria-label="Export report">
-                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=html`}>
-                      HTML
-                    </a>
-                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=csv`}>
-                      CSV
-                    </a>
-                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=pdf`}>
-                      PDF
-                    </a>
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=html`}>HTML</a>
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=csv`}>CSV</a>
+                    <a className="ghost" href={`/api/reports/${encodeURIComponent(professorState.selectedSessionId)}/export?format=pdf`}>PDF</a>
                   </div>
                 ) : null}
               </div>
-              {professorState.reportLoading ? (
-                <div className="report-empty">Loading report...</div>
-              ) : professorState.reportError ? (
-                <div className="report-empty">{professorState.reportError}</div>
-              ) : evidenceTags.length ? (
+              {authorCheck ? (
                 <>
-                  {behavioralRisk ? (
-                    <div className="observation-strip">
-                      <p className="eyebrow">Behavioral Indicators</p>
-                      <p>
-                        <strong>{behavioralRisk.totalPoints} risk points:</strong>{" "}
-                        {behavioralRisk.highCount} high, {behavioralRisk.mediumCount} medium, {behavioralRisk.positiveCount} positive indicators.
-                      </p>
+                  <div className={`flag-summary ${authorCheck.flag}`}>
+                    <div>
+                      <span>{authorCheck.flagLabel}</span>
+                      <strong>{authorCheck.similarityPercent}%</strong>
                     </div>
-                  ) : null}
+                    <p>{authorCheck.flagDetail}</p>
+                  </div>
                   <div className="tag-toolbar" aria-label="Evidence tag controls">
                     <label htmlFor="tag-category">Tag</label>
                     <select id="tag-category" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
@@ -1512,104 +1623,32 @@ function ProfessorView({
                       <option value="time">Timeline time</option>
                     </select>
                   </div>
-                  <div className="event-list">
-                    {sortedEvidenceTags.map((tag) => (
-                      <article className="event-card" key={tag.id}>
-                        <div className="tag-card-header">
-                          <p className="eyebrow">{tag.category}</p>
-                          {tag.at !== undefined ? <span>{new Date(tag.at).toLocaleTimeString()}</span> : null}
-                        </div>
-                        <h3>{tag.label}</h3>
-                        <p>{tag.detail}</p>
-                      </article>
-                    ))}
-                  </div>
-                  {observations.length ? (
-                    <div className="observation-strip">
-                      <p className="eyebrow">Report Observations</p>
-                      {observations.map((item, index) => (
-                        <p key={`${item.title}-${index}`}><strong>{item.title}:</strong> {item.detail}</p>
+                  <div className="check-grid">
+                    <section>
+                      <h3>Writing Pattern Analysis</h3>
+                      {authorCheck.writingPatternChecks.map((check) => (
+                        <article className={`check-row ${check.status}`} key={`${check.label}-${check.detail}`}>
+                          <span>{check.status}</span>
+                          <div><strong>{check.label}</strong><p>{check.detail}</p></div>
+                        </article>
                       ))}
-                    </div>
-                  ) : null}
-                </>
-              ) : observations.length ? (
-                <div className="event-list">
-                  {observations.map((item, index) => (
-                    <article className="event-card" key={`${item.title}-${index}`}>
-                      <p className="eyebrow">{item.group}</p>
-                      <h3>{item.title}</h3>
-                      <p>{item.detail}</p>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <div className="report-empty">Open a submitted session to generate a report.</div>
-              )}
-            </section>
-
-            <section className="panel replay-panel classroom-card">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow">Rewind</p>
-                  <h2>Timeline Replay</h2>
-                </div>
-                <button className="ghost" disabled={!activeReplayFrames.length} onClick={onPlayReplay}>
-                  {isPlaying ? "Pause" : "Play"}
-                </button>
-              </div>
-              <input
-                id="replay-slider"
-                type="range"
-                min="0"
-                max={Math.max(0, activeReplayFrames.length - 1)}
-                value={replayIndex}
-                onChange={(event) => onReplayIndexChange(Number(event.target.value))}
-              />
-              {timelineMarkers.length ? (
-                <div className="timeline-marker-rail" aria-label="Report timeline markers">
-                  {timelineMarkers.map((marker) => (
-                    <button
-                      className={`timeline-marker ${marker.kind}`}
-                      disabled={marker.replayFrameIndex === null}
-                      key={marker.id}
-                      onClick={() => marker.replayFrameIndex !== null ? onReplayIndexChange(marker.replayFrameIndex) : undefined}
-                      type="button"
-                    >
-                      <span>{new Date(marker.at).toLocaleTimeString()}</span>
-                      <strong>{marker.label}</strong>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              <div className="replay-output">
-                {replayFrame ? `[${new Date(replayFrame.at).toLocaleTimeString()}] ${replayFrame.label}\n\n${replayFrame.text}` : ""}
-              </div>
-            </section>
-          </section>
-
-          {professorState.report ? (
-            <section className="evidence-grid">
-              <section className="panel paste-card-panel classroom-card">
-                <div className="panel-header">
-                  <div>
-                    <p className="eyebrow">Paste Cards</p>
-                    <h2>Paste Event Review</h2>
+                    </section>
+                    <section>
+                      <h3>Style Consistency</h3>
+                      {authorCheck.styleConsistencyChecks.map((check) => (
+                        <article className={`check-row ${check.status}`} key={`${check.label}-${check.detail}`}>
+                          <span>{check.status}</span>
+                          <div><strong>{check.label}</strong><p>{check.detail}</p></div>
+                        </article>
+                      ))}
+                    </section>
                   </div>
-                </div>
-                {pasteEventCards.length ? (
-                  <div className="paste-card-list">
-                    {pasteEventCards.map((card) => (
-                      <article className="paste-card" key={card.id}>
-                        <div>
-                          <p className="eyebrow">{new Date(card.at).toLocaleTimeString()}</p>
-                          <h3>{card.title}</h3>
-                          <p>{card.detail}</p>
-                        </div>
-                        <dl>
-                          <div><dt>Words</dt><dd>{card.wordCount}</dd></div>
-                          <div><dt>Characters</dt><dd>{card.characterCount}</dd></div>
-                        </dl>
+                  <section className="source-highlight-list">
+                    <h3>Paste Event Review</h3>
+                    {pasteEventCards.length ? pasteEventCards.map((card) => (
+                      <article key={card.id}>
+                        <div><strong>{card.title}</strong><span>{card.wordCount} words</span></div>
+                        <p>{card.detail}</p>
                         <blockquote>{card.textPreview || "No pasted text preview available."}</blockquote>
                         {card.replayFrameIndex !== null ? (
                           <button className="text-button" onClick={() => onReplayIndexChange(card.replayFrameIndex as number)} type="button">
@@ -1617,35 +1656,125 @@ function ProfessorView({
                           </button>
                         ) : null}
                       </article>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="report-empty">No paste events recorded for this submission.</div>
-                )}
-              </section>
-              <section className="panel classroom-card">
-                <div className="panel-header">
-                  <div>
-                    <p className="eyebrow">Submitted Paper</p>
-                    <h2>Locked Text</h2>
-                  </div>
+                    )) : <div className="report-empty">No pasted source highlights were found.</div>}
+                  </section>
+                  <section className="summary-panel">
+                    <h3>Comprehension Summary</h3>
+                    <div className="text-evidence">{professorState.report?.summaryText || "No comprehension response returned."}</div>
+                  </section>
+                  {sortedEvidenceTags.length ? (
+                    <section className="event-list compact-evidence-list">
+                      {sortedEvidenceTags.slice(0, 4).map((tag) => (
+                        <article className="event-card" key={tag.id}>
+                          <div className="tag-card-header">
+                            <p className="eyebrow">{tag.category}</p>
+                            {tag.at !== undefined ? <span>{new Date(tag.at).toLocaleTimeString()}</span> : null}
+                          </div>
+                          <h3>{tag.label}</h3>
+                          <p>{tag.detail}</p>
+                        </article>
+                      ))}
+                    </section>
+                  ) : null}
+                </>
+              ) : (
+                <div className="report-empty">Open a submitted session to generate an AuthorCheck report.</div>
+              )}
+            </aside>
+          </section>
+
+          <section className="panel replay-panel classroom-card">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Replay</p>
+                <h2>Writing Timeline</h2>
+              </div>
+              <button className="ghost" disabled={!activeReplayFrames.length} onClick={onPlayReplay}>
+                {isPlaying ? "Pause" : "Play"}
+              </button>
+            </div>
+            <input
+              id="replay-slider"
+              type="range"
+              min="0"
+              max={Math.max(0, activeReplayFrames.length - 1)}
+              value={replayIndex}
+              onChange={(event) => onReplayIndexChange(Number(event.target.value))}
+            />
+            {timelineMarkers.length ? (
+              <div className="timeline-marker-rail" aria-label="Report timeline markers">
+                {timelineMarkers.map((marker) => (
+                  <button
+                    className={`timeline-marker ${marker.kind}`}
+                    disabled={marker.replayFrameIndex === null}
+                    key={marker.id}
+                    onClick={() => marker.replayFrameIndex !== null ? onReplayIndexChange(marker.replayFrameIndex) : undefined}
+                    type="button"
+                  >
+                    <span>{new Date(marker.at).toLocaleTimeString()}</span>
+                    <strong>{marker.label}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="replay-output">
+              {replayFrame ? `[${new Date(replayFrame.at).toLocaleTimeString()}] ${replayFrame.label}\n\n${replayFrame.text}` : ""}
+            </div>
+          </section>
+
+          {professorState.report ? (
+            <section className="panel classroom-card rubric-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Grading</p>
+                  <h2>Rubric</h2>
                 </div>
-                <div className="text-evidence">{professorState.report.submittedText || "No submitted text returned."}</div>
-              </section>
-              <section className="panel classroom-card">
-                <div className="panel-header">
-                  <div>
-                    <p className="eyebrow">Timed Summary</p>
-                    <h2>Comprehension Check</h2>
-                  </div>
-                </div>
-                <div className="text-evidence">{professorState.report.summaryText || "No timed summary returned."}</div>
-              </section>
+              </div>
+              <div className="rubric-grid">
+                {["Argument", "Evidence", "Organization", "Original Process"].map((item) => (
+                  <label key={item}>
+                    {item}
+                    <input type="number" min="0" max="25" placeholder="0-25" />
+                  </label>
+                ))}
+              </div>
+              <textarea placeholder="Private grading notes..." />
             </section>
           ) : null}
         </>
       ) : (
         <>
+          <section className="instructor-overview-grid">
+            <section className="panel classroom-card analytics-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Analytics</p>
+                  <h2>Class Engagement</h2>
+                </div>
+              </div>
+              <dl className="metrics compact-metrics">
+                <div><dt>Pending</dt><dd>{reviewableSubmissions.length}</dd></div>
+                <div><dt>Flagged</dt><dd>{professorState.submissions.filter((submission) => submission.submittedAt).length}</dd></div>
+                <div><dt>Roster</dt><dd>{professorState.roster.length}</dd></div>
+                <div><dt>Templates</dt><dd>6</dd></div>
+              </dl>
+            </section>
+
+            <section className="panel classroom-card template-library-card">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Template Library</p>
+                  <h2>Quick Creation</h2>
+                </div>
+              </div>
+              <div className="template-list">
+                {["Argument Essay", "Research Summary", "Lab Reflection", "Source Analysis", "Reading Response", "Capstone Draft"].map((template) => (
+                  <button className="template-chip" key={template} type="button">{template}</button>
+                ))}
+              </div>
+            </section>
+          </section>
+
           <section className="dashboard-grid classroom-management-grid">
             <section className="panel classroom-card">
               <div className="panel-header">
@@ -1723,8 +1852,13 @@ function ProfessorView({
                   value={enrollmentForm.email}
                   onChange={(event) => onEnrollmentFormChange({ ...enrollmentForm, email: event.target.value })}
                 />
+                <label htmlFor="welcome-message">Welcome message</label>
+                <textarea
+                  id="welcome-message"
+                  placeholder="Add a class welcome note for email invites..."
+                />
                 <button className="primary" disabled={!professorState.selectedAssignmentId || professorState.enrollmentLoading} type="submit">
-                  {professorState.enrollmentLoading ? "Saving..." : "Enroll Student"}
+                  {professorState.enrollmentLoading ? "Saving..." : "Enroll Student / Send Invite"}
                 </button>
                 {professorState.enrollmentError ? <p className="sync-error">{professorState.enrollmentError}</p> : null}
               </form>
@@ -1881,6 +2015,16 @@ function formatAssignmentMeta(assignment: StudentAssignment) {
   const due = assignment.dueAt ? `Due ${new Date(assignment.dueAt).toLocaleDateString()}` : "No due date";
   const attempt = assignment.attemptNumber ? `Attempt ${assignment.attemptNumber}` : "Not started";
   return `${due} - ${status} - ${attempt}`;
+}
+
+function findDueDateConflicts(assignments: StudentAssignment[]) {
+  const dueCounts = new Map<string, number>();
+  assignments.forEach((assignment) => {
+    if (!assignment.dueAt || assignment.submittedAt) return;
+    const key = new Date(assignment.dueAt).toISOString().slice(0, 10);
+    dueCounts.set(key, (dueCounts.get(key) || 0) + 1);
+  });
+  return [...dueCounts.values()].some((count) => count > 1);
 }
 
 function formatTimer(seconds: number) {

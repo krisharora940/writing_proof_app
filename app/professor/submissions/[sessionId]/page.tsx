@@ -1,20 +1,10 @@
-import WorkspaceClient from "@/components/workspace-client";
+import { AuthorCheckApp } from "@/components/figma-authorcheck-client";
 
 type ProfessorSubmissionPageProps = {
   params: Promise<{ sessionId: string }>;
-  searchParams: Promise<{ assignmentId?: string }>;
 };
 
-export default async function ProfessorSubmissionPage({ params, searchParams }: ProfessorSubmissionPageProps) {
+export default async function ProfessorSubmissionPage({ params }: ProfessorSubmissionPageProps) {
   const { sessionId } = await params;
-  const { assignmentId } = await searchParams;
-
-  return (
-    <WorkspaceClient
-      initialProfessorAssignmentId={assignmentId}
-      initialProfessorSessionId={sessionId}
-      professorDetailMode
-      requiredRole="professor"
-    />
-  );
+  return <AuthorCheckApp page="review" role="professor" sessionId={sessionId} />;
 }

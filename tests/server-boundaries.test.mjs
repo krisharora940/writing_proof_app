@@ -20,6 +20,8 @@ test("API boundaries cover student writes and professor review reads", () => {
     "/api/replay",
     "/api/sessions/:sessionId/metrics",
     "/api/summary-comparison",
+    "/api/professor/classes",
+    "/api/professor/classes/:classId/students",
     "/api/professor/assignments",
     "/api/professor/assignments/:assignmentId/students",
     "/api/reports/:sessionId",

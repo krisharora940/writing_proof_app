@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const pageSource = readFileSync(new URL("../components/workspace-client.tsx", import.meta.url), "utf8");
+const figmaSource = readFileSync(new URL("../components/figma-authorcheck-client.tsx", import.meta.url), "utf8");
 const landingSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 const loginSource = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
+const studentLoginSource = readFileSync(new URL("../app/login/student/page.tsx", import.meta.url), "utf8");
+const instructorLoginSource = readFileSync(new URL("../app/login/instructor/page.tsx", import.meta.url), "utf8");
 const signupSource = readFileSync(new URL("../app/signup/page.tsx", import.meta.url), "utf8");
 const studentRouteSource = readFileSync(new URL("../app/student/page.tsx", import.meta.url), "utf8");
 const professorRouteSource = readFileSync(new URL("../app/professor/page.tsx", import.meta.url), "utf8");
@@ -16,13 +19,18 @@ const comparisonRouteSource = readFileSync(new URL("../app/api/summary-compariso
 const resetRouteSource = readFileSync(new URL("../app/api/sessions/reset/route.ts", import.meta.url), "utf8");
 
 test("app shell exposes public, auth, student, and professor routes", () => {
-  assert.match(landingSource, /AuthorCheck/);
-  assert.match(landingSource, /href="\/login"/);
-  assert.match(landingSource, /href="\/signup"/);
-  assert.match(loginSource, /mode="login"/);
+  assert.match(landingSource, /page="landing"/);
+  assert.match(figmaSource, /AuthorCheck/);
+  assert.match(figmaSource, /\/login\/student/);
+  assert.match(figmaSource, /\/login\/instructor/);
+  assert.match(loginSource, /page="landing"/);
+  assert.match(studentLoginSource, /page="login"/);
+  assert.match(studentLoginSource, /role="student"/);
+  assert.match(instructorLoginSource, /page="login"/);
+  assert.match(instructorLoginSource, /role="professor"/);
   assert.match(signupSource, /mode="signup"/);
-  assert.match(studentRouteSource, /requiredRole="student"/);
-  assert.match(professorRouteSource, /requiredRole="professor"/);
+  assert.match(studentRouteSource, /role="student"/);
+  assert.match(professorRouteSource, /role="professor"/);
 });
 
 test("frontend hydrates identity and student state from backend session APIs", () => {

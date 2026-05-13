@@ -84,9 +84,29 @@ create table if not exists assignments (
   professor_id uuid not null references app_users(id),
   title text not null,
   prompt text not null,
+  kind text not null default 'assignment',
+  class_id uuid references assignments(id) on delete set null,
   due_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  check (kind in ('class', 'assignment')),
+  check (kind = 'assignment' or class_id is null)
 );
+
+alter table assignments
+add column if not exists kind text not null default 'assignment',
+add column if not exists class_id uuid references assignments(id) on delete set null;
+
+alter table assignments
+drop constraint if exists assignments_kind_check;
+
+alter table assignments
+add constraint assignments_kind_check check (kind in ('class', 'assignment'));
+
+alter table assignments
+drop constraint if exists assignments_class_id_check;
+
+alter table assignments
+add constraint assignments_class_id_check check (kind = 'assignment' or class_id is null);
 
 create table if not exists assignment_instructors (
   assignment_id uuid not null references assignments(id) on delete cascade,
@@ -351,6 +371,8 @@ add column if not exists token_usage jsonb;
 create index if not exists auth_identities_user_idx on auth_identities(user_id);
 create index if not exists auth_credentials_email_idx on auth_credentials(email);
 create index if not exists assignments_professor_created_idx on assignments(professor_id, created_at desc);
+create index if not exists assignments_professor_kind_created_idx on assignments(professor_id, kind, created_at desc);
+create index if not exists assignments_class_idx on assignments(class_id);
 create index if not exists assignment_instructors_professor_idx on assignment_instructors(professor_id);
 create index if not exists assignment_students_student_idx on assignment_students(student_id);
 create index if not exists writing_sessions_assignment_idx on writing_sessions(assignment_id);

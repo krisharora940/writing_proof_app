@@ -408,6 +408,7 @@ test("createProfessorAssignmentPostgres creates owned assignment with optional d
       id: "assignment-2",
       title: "Essay 2",
       prompt: "Write a process reflection.",
+      class_id: null,
       due_at: new Date(5000),
       created_at: new Date(1000)
     }] },
@@ -423,10 +424,11 @@ test("createProfessorAssignmentPostgres creates owned assignment with optional d
 
   assert.equal(result.ok, true);
   assert.equal(result.value.assignment.id, "assignment-2");
+  assert.equal(result.value.assignment.classId, null);
   assert.equal(result.value.assignment.dueAt, 5000);
   assert.equal(client.calls[0].sql, "begin");
   assert.match(client.calls[1].sql, /insert into assignments/);
-  assert.deepEqual(client.calls[1].params, ["professor-1", "Essay 2", "Write a process reflection.", 5000]);
+  assert.deepEqual(client.calls[1].params, ["professor-1", "Essay 2", "Write a process reflection.", null, 5000]);
   assert.match(client.calls[2].sql, /insert into assignment_instructors/);
   assert.equal(client.calls[3].sql, "commit");
 });

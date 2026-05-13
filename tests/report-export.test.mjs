@@ -10,6 +10,22 @@ const report = {
     detail: "The timed summary mentions process evidence."
   }],
   tags: [],
+  behavioralRisk: {
+    totalPoints: 0,
+    highCount: 0,
+    mediumCount: 0,
+    positiveCount: 0,
+    signals: []
+  },
+  authorCheck: {
+    similarityPercent: 12,
+    flag: "green",
+    flagLabel: "Green Flag",
+    flagDetail: "Likely originality based on 12% AuthorCheck similarity indicators.",
+    writingPatternChecks: [],
+    styleConsistencyChecks: [],
+    sourceHighlights: []
+  },
   pasteEventCards: [{
     id: "paste-card-1",
     eventId: "event-1",

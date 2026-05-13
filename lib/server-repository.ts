@@ -4,10 +4,13 @@ import type {
   AssignmentSubmissionListResponse,
   CreateProfessorAssignmentBody,
   CreateProfessorAssignmentResponse,
+  CreateProfessorClassBody,
+  CreateProfessorClassResponse,
   EnrollAssignmentStudentBody,
   PasteEventCard,
   ProfessorReportResponse,
   ProfessorAssignmentListResponse,
+  ProfessorClassListResponse,
   ReportTimelineMarker,
   ReportExportResponse,
   ReplayResponse,
@@ -25,6 +28,7 @@ import { reconstructReplay } from "./replay.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
 import { generateBehavioralRiskEvidenceTags, generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
+import { buildAuthorCheckSummary } from "./authorcheck-report.ts";
 import { analyzeProcess, calculateSessionMetrics, countWords } from "./writing-events.ts";
 import type { Snapshot, WritingEvent } from "./writing-events";
 import type { ReplayFrame } from "./replay";
@@ -49,6 +53,7 @@ export type StoredTimedSummary = {
 
 export type DemoRepositoryState = {
   assignments: ProfessorAssignmentListResponse["assignments"];
+  classes: ProfessorClassListResponse["classes"];
   roster: AssignmentRosterResponse["students"];
   session: ServerSession;
   draftText: string;
@@ -181,10 +186,17 @@ function frameIndexForEvent(frames: ReplayFrame[], eventId: string) {
 
 export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState {
   return {
+    classes: [{
+      id: DEMO_ASSIGNMENT_ID,
+      name: "Demo Class",
+      studentCount: 1,
+      createdAt: 0
+    }],
     assignments: [{
       id: DEMO_ASSIGNMENT_ID,
       title: "Process Evidence Reflection",
       prompt: "Write a short paper on whether process evidence is fairer than final-text AI detection.",
+      classId: DEMO_ASSIGNMENT_ID,
       dueAt: null,
       createdAt: 0
     }],
@@ -220,6 +232,7 @@ export function getDemoRepositoryState() {
 export function resetDemoRepository(now = Date.now()) {
   const nextState = createDemoRepositoryState(now);
   repositoryState.session = nextState.session;
+  repositoryState.classes = nextState.classes;
   repositoryState.assignments = nextState.assignments;
   repositoryState.roster = nextState.roster;
   repositoryState.draftText = nextState.draftText;
@@ -380,6 +393,47 @@ export function listProfessorAssignmentsDemo(
   };
 }
 
+export function listProfessorClassesDemo(
+  professorId: string,
+  state = repositoryState
+): MutationResult<ProfessorClassListResponse> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot access classes." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      classes: state.classes.map((classroom) => ({
+        ...classroom,
+        studentCount: state.roster.length
+      }))
+    }
+  };
+}
+
+export function createProfessorClassDemo(
+  state: DemoRepositoryState,
+  professorId: string,
+  body: CreateProfessorClassBody
+): MutationResult<CreateProfessorClassResponse> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot create classes." };
+  }
+
+  const name = body.name.trim();
+  if (!name) return { ok: false, status: 400, error: "Class name is required." };
+
+  const classroom = {
+    id: crypto.randomUUID(),
+    name,
+    studentCount: 0,
+    createdAt: Date.now()
+  };
+  state.classes = [classroom, ...state.classes];
+  return { ok: true, value: { class: classroom } };
+}
+
 export function createProfessorAssignmentDemo(
   state: DemoRepositoryState,
   professorId: string,
@@ -397,6 +451,7 @@ export function createProfessorAssignmentDemo(
     id: crypto.randomUUID(),
     title,
     prompt,
+    classId: body.classId ?? state.classes[0]?.id ?? null,
     dueAt: typeof body.dueAt === "number" ? body.dueAt : null,
     createdAt: Date.now()
   };
@@ -524,6 +579,13 @@ export function getProfessorReportDemo(
   tags.push(...generateObservationEvidenceTags(observations));
   const frames = reconstructReplay(state.snapshots, state.events);
   const highlights = buildReportProcessHighlights(state.events, frames, tags);
+  const authorCheck = buildAuthorCheckSummary({
+    events: state.events,
+    submittedText: state.submittedText,
+    summaryText: state.timedSummary?.summaryText || "",
+    behavioralRisk,
+    tags
+  });
 
   return {
     ok: true,
@@ -531,6 +593,7 @@ export function getProfessorReportDemo(
       observations,
       tags,
       behavioralRisk,
+      authorCheck,
       frames,
       ...highlights,
       submittedText: state.submittedText,

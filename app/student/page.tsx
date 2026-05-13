@@ -1,5 +1,5 @@
-import WorkspaceClient from "@/components/workspace-client";
+import { AuthorCheckApp } from "@/components/figma-authorcheck-client";
 
 export default function StudentPage() {
-  return <WorkspaceClient requiredRole="student" />;
+  return <AuthorCheckApp page="student" role="student" />;
 }

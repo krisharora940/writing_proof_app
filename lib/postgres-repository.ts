@@ -5,10 +5,13 @@ import type {
   AssignmentSubmissionListResponse,
   CreateProfessorAssignmentBody,
   CreateProfessorAssignmentResponse,
+  CreateProfessorClassBody,
+  CreateProfessorClassResponse,
   EnrollAssignmentStudentBody,
   LockSubmissionRequest,
   RemoveAssignmentStudentBody,
   ProfessorAssignmentListResponse,
+  ProfessorClassListResponse,
   ProfessorReportResponse,
   ReportExportResponse,
   ReplayResponse,
@@ -28,6 +31,7 @@ import {
 import { createReportExport, type ReportExportFormat } from "./report-export.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import { buildReportProcessHighlights, type MutationResult, type StoredTimedSummary } from "./server-repository.ts";
+import { buildAuthorCheckSummary } from "./authorcheck-report.ts";
 import type { ReplayFrame } from "./replay";
 import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
 import { calculateSessionMetrics, type Observation, type Snapshot, type WritingEvent } from "./writing-events.ts";
@@ -131,7 +135,15 @@ type AssignmentRow = {
   id: string;
   title: string;
   prompt: string;
+  class_id: string | null;
   due_at: Date | string | null;
+  created_at: Date | string;
+};
+
+type ProfessorClassRow = {
+  id: string;
+  name: string;
+  student_count: number;
   created_at: Date | string;
 };
 
@@ -198,6 +210,7 @@ export async function listStudentAssignmentsPostgres(
        limit 1
      ) latest_session on true
      where assignment_students.student_id = $1
+       and assignments.kind = 'assignment'
      order by assignments.due_at nulls last, assignments.created_at desc`,
     [studentId]
   );
@@ -232,6 +245,7 @@ export async function getCurrentStudentSessionPostgres(
      join assignments on assignments.id = assignment_students.assignment_id
      where assignment_students.student_id = $1
        and ($2::uuid is null or assignment_students.assignment_id = $2::uuid)
+       and assignments.kind = 'assignment'
      order by assignments.created_at desc
      limit 1`,
     [studentId, assignmentId ?? null]
@@ -326,10 +340,11 @@ export async function listProfessorAssignmentsPostgres(
   professorId: string
 ): Promise<MutationResult<ProfessorAssignmentListResponse>> {
   const result = await client.query<AssignmentRow>(
-    `select assignments.id, assignments.title, assignments.prompt, assignments.due_at, assignments.created_at
+    `select assignments.id, assignments.title, assignments.prompt, assignments.class_id, assignments.due_at, assignments.created_at
      from assignments
      join assignment_instructors on assignment_instructors.assignment_id = assignments.id
      where assignment_instructors.professor_id = $1
+       and assignments.kind = 'assignment'
      order by assignments.created_at desc`,
     [professorId]
   );
@@ -341,6 +356,7 @@ export async function listProfessorAssignmentsPostgres(
         id: row.id,
         title: row.title,
         prompt: row.prompt,
+        classId: row.class_id ?? null,
         dueAt: nullableTimeToMs(row.due_at),
         createdAt: timeToMs(row.created_at)
       }))
@@ -362,11 +378,19 @@ export async function createProfessorAssignmentPostgres(
 
   await client.query("begin");
   try {
+    if (body.classId) {
+      const access = await requireProfessorClassAccess(client, body.classId, professorId);
+      if (!access.ok) {
+        await client.query("rollback");
+        return access;
+      }
+    }
+
     const assignmentResult = await client.query<AssignmentRow>(
-      `insert into assignments (professor_id, title, prompt, due_at)
-       values ($1, $2, $3, case when $4::double precision is null then null else to_timestamp($4 / 1000.0) end)
-       returning id, title, prompt, due_at, created_at`,
-      [professorId, title, prompt, body.dueAt ?? null]
+      `insert into assignments (professor_id, title, prompt, kind, class_id, due_at)
+       values ($1, $2, $3, 'assignment', $4, case when $5::double precision is null then null else to_timestamp($5 / 1000.0) end)
+       returning id, title, prompt, class_id, due_at, created_at`,
+      [professorId, title, prompt, body.classId ?? null, body.dueAt ?? null]
     );
     const assignment = assignmentResult.rows[0];
     await client.query(
@@ -375,6 +399,16 @@ export async function createProfessorAssignmentPostgres(
        on conflict (assignment_id, professor_id) do nothing`,
       [assignment.id, professorId]
     );
+    if (body.classId) {
+      await client.query(
+        `insert into assignment_students (assignment_id, student_id)
+         select $1, student_id
+         from assignment_students
+         where assignment_id = $2
+         on conflict (assignment_id, student_id) do nothing`,
+        [assignment.id, body.classId]
+      );
+    }
     await client.query("commit");
 
     return {
@@ -384,8 +418,84 @@ export async function createProfessorAssignmentPostgres(
           id: assignment.id,
           title: assignment.title,
           prompt: assignment.prompt,
+          classId: assignment.class_id ?? null,
           dueAt: nullableTimeToMs(assignment.due_at),
           createdAt: timeToMs(assignment.created_at)
+        }
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function listProfessorClassesPostgres(
+  client: QueryClient,
+  professorId: string
+): Promise<MutationResult<ProfessorClassListResponse>> {
+  const result = await client.query<ProfessorClassRow>(
+    `select
+       assignments.id,
+       assignments.title as name,
+       assignments.created_at,
+       count(assignment_students.student_id)::int as student_count
+     from assignments
+     join assignment_instructors on assignment_instructors.assignment_id = assignments.id
+     left join assignment_students on assignment_students.assignment_id = assignments.id
+     where assignment_instructors.professor_id = $1
+       and assignments.kind = 'class'
+     group by assignments.id, assignments.title, assignments.created_at
+     order by assignments.created_at desc`,
+    [professorId]
+  );
+
+  return {
+    ok: true,
+    value: {
+      classes: result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        studentCount: Number(row.student_count),
+        createdAt: timeToMs(row.created_at)
+      }))
+    }
+  };
+}
+
+export async function createProfessorClassPostgres(
+  client: QueryClient,
+  professorId: string,
+  body: CreateProfessorClassBody
+): Promise<MutationResult<CreateProfessorClassResponse>> {
+  const name = body.name.trim();
+  if (!name) return { ok: false, status: 400, error: "Class name is required." };
+
+  await client.query("begin");
+  try {
+    const classResult = await client.query<AssignmentRow>(
+      `insert into assignments (professor_id, title, prompt, kind)
+       values ($1, $2, $3, 'class')
+       returning id, title, prompt, class_id, due_at, created_at`,
+      [professorId, name, `Class workspace for ${name}.`]
+    );
+    const classroom = classResult.rows[0];
+    await client.query(
+      `insert into assignment_instructors (assignment_id, professor_id, role)
+       values ($1, $2, 'owner')
+       on conflict (assignment_id, professor_id) do nothing`,
+      [classroom.id, professorId]
+    );
+    await client.query("commit");
+
+    return {
+      ok: true,
+      value: {
+        class: {
+          id: classroom.id,
+          name: classroom.title,
+          studentCount: 0,
+          createdAt: timeToMs(classroom.created_at)
         }
       }
     };
@@ -994,12 +1104,20 @@ export async function getProfessorReportPostgres(
       ]
       : generateObservationEvidenceTags(existingObservations);
     const highlights = buildReportProcessHighlights(events, frames, existingTags);
+    const authorCheck = buildAuthorCheckSummary({
+      events,
+      submittedText,
+      summaryText,
+      behavioralRisk,
+      tags: existingTags
+    });
     return {
       ok: true,
       value: {
         observations: existingObservations,
         tags: existingTags,
         behavioralRisk,
+        authorCheck,
         frames,
         ...highlights,
         submittedText,
@@ -1028,6 +1146,13 @@ export async function getProfessorReportPostgres(
   const reportId = await createProfessorReportPostgres(client, sessionId, professorId, observations, frames.length);
   if (audit) await writeAiEvaluationLog(client, sessionId, reportId, audit);
   const highlights = buildReportProcessHighlights(events, frames, tags);
+  const authorCheck = buildAuthorCheckSummary({
+    events,
+    submittedText,
+    summaryText,
+    behavioralRisk,
+    tags
+  });
 
   return {
     ok: true,
@@ -1035,6 +1160,7 @@ export async function getProfessorReportPostgres(
       observations,
       tags,
       behavioralRisk,
+      authorCheck,
       frames,
       ...highlights,
       submittedText,
@@ -1114,6 +1240,24 @@ async function requireProfessorAssignmentAccess(
     [assignmentId, professorId]
   );
   if (!access.rows[0]) return { ok: false, status: 403, error: "Professor cannot access this assignment." };
+  return { ok: true, value: access.rows[0] };
+}
+
+async function requireProfessorClassAccess(
+  client: QueryClient,
+  classId: string,
+  professorId: string
+): Promise<MutationResult<{ id: string }>> {
+  const access = await client.query<{ id: string }>(
+    `select assignments.id
+     from assignments
+     join assignment_instructors on assignment_instructors.assignment_id = assignments.id
+     where assignments.id = $1
+       and assignment_instructors.professor_id = $2
+       and assignments.kind = 'class'`,
+    [classId, professorId]
+  );
+  if (!access.rows[0]) return { ok: false, status: 403, error: "Professor cannot access this class." };
   return { ok: true, value: access.rows[0] };
 }
 

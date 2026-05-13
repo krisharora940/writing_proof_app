@@ -6,6 +6,7 @@ import type { Observation } from "./writing-events";
 import type { ReportExport } from "./report-export";
 import type { EvidenceTag } from "./evidence-tags";
 import type { BehavioralRiskSummary } from "./behavioral-risk";
+import type { AuthorCheckSummary } from "./authorcheck-report";
 
 export type ApiBoundary = {
   method: "GET" | "POST" | "DELETE";
@@ -50,6 +51,30 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     path: "/api/sessions/reset",
     access: "student",
     purpose: "Disabled legacy route; students receive one submission per assignment."
+  },
+  {
+    method: "GET",
+    path: "/api/professor/classes",
+    access: "professor",
+    purpose: "List classes owned by the signed-in professor."
+  },
+  {
+    method: "POST",
+    path: "/api/professor/classes",
+    access: "professor",
+    purpose: "Create a class owned by the signed-in professor."
+  },
+  {
+    method: "GET",
+    path: "/api/professor/classes/:classId/students",
+    access: "professor",
+    purpose: "List students enrolled in a professor-owned class."
+  },
+  {
+    method: "POST",
+    path: "/api/professor/classes/:classId/students",
+    access: "professor",
+    purpose: "Invite or enroll one student in a professor-owned class."
   },
   {
     method: "GET",
@@ -230,6 +255,7 @@ export type ProfessorReportResponse = {
   observations: Observation[];
   tags: EvidenceTag[];
   behavioralRisk: BehavioralRiskSummary;
+  authorCheck: AuthorCheckSummary;
   frames: ReplayFrame[];
   pasteEventCards: PasteEventCard[];
   timelineMarkers: ReportTimelineMarker[];
@@ -282,7 +308,17 @@ export type ProfessorAssignmentListResponse = {
     id: string;
     title: string;
     prompt: string;
+    classId: string | null;
     dueAt: number | null;
+    createdAt: number;
+  }>;
+};
+
+export type ProfessorClassListResponse = {
+  classes: Array<{
+    id: string;
+    name: string;
+    studentCount: number;
     createdAt: number;
   }>;
 };
@@ -290,11 +326,20 @@ export type ProfessorAssignmentListResponse = {
 export type CreateProfessorAssignmentBody = {
   title: string;
   prompt: string;
+  classId?: string | null;
   dueAt?: number | null;
 };
 
 export type CreateProfessorAssignmentResponse = {
   assignment: ProfessorAssignmentListResponse["assignments"][number];
+};
+
+export type CreateProfessorClassBody = {
+  name: string;
+};
+
+export type CreateProfessorClassResponse = {
+  class: ProfessorClassListResponse["classes"][number];
 };
 
 export type AssignmentSubmissionListResponse = {

@@ -74,6 +74,8 @@ test("schema supports authenticated identity and professor assignment access", (
   assert.match(schema, /check \(position\('scrypt\$' in password_hash\) = 1\)/);
   assert.match(schema, /create table if not exists assignment_instructors/);
   assert.match(schema, /primary key \(assignment_id, professor_id\)/);
+  assert.match(schema, /kind text not null default 'assignment'/);
+  assert.match(schema, /class_id uuid references assignments/);
 });
 
 test("schema captures AI evaluation audit metadata", () => {

@@ -43,6 +43,7 @@ function isCreateAssignmentBody(value: unknown): value is CreateProfessorAssignm
   return (
     typeof body.title === "string" &&
     typeof body.prompt === "string" &&
+    (body.classId === undefined || body.classId === null || typeof body.classId === "string") &&
     (body.dueAt === undefined || body.dueAt === null || typeof body.dueAt === "number")
   );
 }
