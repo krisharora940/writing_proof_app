@@ -742,7 +742,6 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
     return loadJson<ProfessorAssignmentListResponse>("/api/professor/assignments")
       .then((data) => {
         setAssignments(data.assignments);
-        setSelectedAssignmentId((current) => current || data.assignments[0]?.id || "");
         return data.assignments;
       });
   }, []);
@@ -762,7 +761,11 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   }, [loadAssignments, loadClasses]);
 
   useEffect(() => {
-    if (!selectedAssignmentId) return;
+    if (!selectedAssignmentId) {
+      setSubmissions([]);
+      setReports({});
+      return;
+    }
     loadJson<AssignmentSubmissionListResponse>(`/api/assignments/${selectedAssignmentId}/submissions`)
       .then((data) => {
         setSubmissions(data.submissions);
@@ -775,10 +778,24 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
       .catch((nextError) => setError(readError(nextError)));
   }, [selectedAssignmentId]);
 
+  const selectedClassAssignments = useMemo(
+    () => assignments.filter((assignment) => assignment.classId === selectedClassId),
+    [assignments, selectedClassId]
+  );
+  const selectedClass = classes.find((classroom) => classroom.id === selectedClassId);
   const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId);
   const visibleSubmissions = selectedTab === 2
     ? submissions.filter((submission) => submission.sessionId && reports[submission.sessionId]?.authorCheck.flag !== "green")
     : submissions;
+
+  useEffect(() => {
+    if (!selectedClassId) {
+      setSelectedAssignmentId("");
+      return;
+    }
+    if (selectedClassAssignments.some((assignment) => assignment.id === selectedAssignmentId)) return;
+    setSelectedAssignmentId(selectedClassAssignments[0]?.id || "");
+  }, [selectedAssignmentId, selectedClassAssignments, selectedClassId]);
 
   async function createClass(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -823,8 +840,31 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
             </Tabs>
             <Box sx={{ p: 3 }}>
               <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3, gap: 2, flexWrap: "wrap" }}>
-                <Typography variant="h5">{selectedAssignment?.title || "Submissions Requiring Review"}</Typography>
+                <Box>
+                  <Typography variant="h5">{selectedAssignment?.title || selectedClass?.name || "Submissions Requiring Review"}</Typography>
+                  {selectedClass && <Typography variant="body2" color="text.secondary">{selectedClass.name} assignments</Typography>}
+                </Box>
                 <Chip label={`${visibleSubmissions.length} shown`} color="primary" />
+              </Box>
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Assignments</Typography>
+                {selectedClassAssignments.length ? (
+                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                    {selectedClassAssignments.map((assignment) => (
+                      <Button
+                        key={assignment.id}
+                        variant={assignment.id === selectedAssignmentId ? "contained" : "outlined"}
+                        color="success"
+                        size="small"
+                        onClick={() => setSelectedAssignmentId(assignment.id)}
+                      >
+                        {assignment.title}
+                      </Button>
+                    ))}
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">No assignments have been created for this class.</Typography>
+                )}
               </Box>
               <TableContainer>
                 <Table>
