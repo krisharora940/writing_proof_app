@@ -15,6 +15,8 @@ import type {
   ReportExportResponse,
   ReplayResponse,
   RemoveAssignmentStudentBody,
+  SaveProfessorGradeBody,
+  SaveProfessorGradeResponse,
   SessionMetricsResponse,
   SummaryComparisonResponse,
   LockSubmissionRequest,
@@ -61,6 +63,7 @@ export type DemoRepositoryState = {
   snapshots: Snapshot[];
   submittedText: string;
   timedSummary: StoredTimedSummary | null;
+  grades: Record<string, SaveProfessorGradeResponse>;
 };
 
 export type MutationResult<T> =
@@ -219,7 +222,8 @@ export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState
     events: [],
     snapshots: [{ at: now, text: "" }],
     submittedText: "",
-    timedSummary: null
+    timedSummary: null,
+    grades: {}
   };
 }
 
@@ -240,6 +244,7 @@ export function resetDemoRepository(now = Date.now()) {
   repositoryState.snapshots = nextState.snapshots;
   repositoryState.submittedText = nextState.submittedText;
   repositoryState.timedSummary = nextState.timedSummary;
+  repositoryState.grades = nextState.grades;
 }
 
 export function appendWritingEvent(
@@ -545,10 +550,31 @@ export function listAssignmentSubmissionsDemo(
         status: state.session.status || "draft",
         submittedAt: state.session.submittedAt,
         lockedAt: state.session.lockedAt,
-        attemptNumber: state.session.attemptNumber || 1
+        attemptNumber: state.session.attemptNumber || 1,
+        gradePercent: state.grades[state.session.id]?.gradePercent ?? null,
+        gradedAt: state.grades[state.session.id]?.gradedAt ?? null
       }]
     }
   };
+}
+
+export function saveProfessorGradeDemo(
+  state: DemoRepositoryState,
+  sessionId: string,
+  professorId: string,
+  body: SaveProfessorGradeBody
+): MutationResult<SaveProfessorGradeResponse> {
+  if (state.session.id !== sessionId) return { ok: false, status: 404, error: "Submission not found." };
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot grade this submission." };
+  }
+  if (!Number.isInteger(body.gradePercent) || body.gradePercent < 0 || body.gradePercent > 100) {
+    return { ok: false, status: 400, error: "Grade must be between 0 and 100." };
+  }
+
+  const saved = { gradePercent: body.gradePercent, gradedAt: Date.now() };
+  state.grades[sessionId] = saved;
+  return { ok: true, value: saved };
 }
 
 export function getProfessorReportDemo(

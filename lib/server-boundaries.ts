@@ -155,6 +155,12 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     purpose: "Load the neutral evidence report for an owned assignment."
   },
   {
+    method: "POST",
+    path: "/api/reports/:sessionId/grade",
+    access: "professor",
+    purpose: "Save a professor grade for an owned submission."
+  },
+  {
     method: "GET",
     path: "/api/reports/:sessionId/export",
     access: "professor",
@@ -303,6 +309,25 @@ export type StudentAssignmentListResponse = {
   }>;
 };
 
+export type SaveProfessorGradeBody = {
+  gradePercent: number;
+  rubricScores: {
+    argument: number;
+    evidence: number;
+    process: number;
+    presentation: number;
+  };
+  comments: Array<{
+    lineNumber: number;
+    text: string;
+  }>;
+};
+
+export type SaveProfessorGradeResponse = {
+  gradePercent: number;
+  gradedAt: number;
+};
+
 export type ProfessorAssignmentListResponse = {
   assignments: Array<{
     id: string;
@@ -352,6 +377,8 @@ export type AssignmentSubmissionListResponse = {
     submittedAt: number | null;
     lockedAt: number | null;
     attemptNumber: number | null;
+    gradePercent: number | null;
+    gradedAt: number | null;
   }>;
 };
 

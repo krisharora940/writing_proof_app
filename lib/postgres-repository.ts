@@ -15,6 +15,8 @@ import type {
   ProfessorReportResponse,
   ReportExportResponse,
   ReplayResponse,
+  SaveProfessorGradeBody,
+  SaveProfessorGradeResponse,
   SessionMetricsResponse,
   SummaryComparisonResponse,
   StudentAssignmentListResponse,
@@ -160,6 +162,8 @@ type SubmissionListRow = {
   submitted_at: Date | string | null;
   locked_at: Date | string | null;
   attempt_number: number | null;
+  grade_percent: number | null;
+  graded_at: Date | string | null;
 };
 
 type RosterRow = {
@@ -645,7 +649,9 @@ export async function listAssignmentSubmissionsPostgres(
        coalesce(latest_session.status::text, 'not_started') as status,
        latest_session.submitted_at,
        latest_session.locked_at,
-       latest_session.attempt_number
+       latest_session.attempt_number,
+       professor_grades.grade_percent,
+       professor_grades.graded_at
      from assignment_students
      join app_users on app_users.id = assignment_students.student_id
      left join lateral (
@@ -657,9 +663,12 @@ export async function listAssignmentSubmissionsPostgres(
        order by attempt_number desc
        limit 1
      ) latest_session on true
+     left join professor_grades
+       on professor_grades.session_id = latest_session.id
+      and professor_grades.professor_id = $2
      where assignment_students.assignment_id = $1
      order by app_users.display_name, app_users.email`,
-    [assignmentId]
+    [assignmentId, professorId]
   );
 
   return {
@@ -673,7 +682,9 @@ export async function listAssignmentSubmissionsPostgres(
         status: row.status,
         submittedAt: nullableTimeToMs(row.submitted_at),
         lockedAt: nullableTimeToMs(row.locked_at),
-        attemptNumber: row.attempt_number
+        attemptNumber: row.attempt_number,
+        gradePercent: row.grade_percent,
+        gradedAt: nullableTimeToMs(row.graded_at)
       }))
     }
   };
@@ -1192,6 +1203,53 @@ export async function exportProfessorReportPostgres(
   );
 
   return { ok: true, value: createReportExport(report.value, format, sessionId) };
+}
+
+export async function saveProfessorGradePostgres(
+  client: QueryClient,
+  sessionId: string,
+  professorId: string,
+  body: SaveProfessorGradeBody
+): Promise<MutationResult<SaveProfessorGradeResponse>> {
+  const access = await getSessionAccessPostgres(client, sessionId, { id: professorId, role: "professor" });
+  if (!access) return { ok: false, status: 404, error: "Submission not found." };
+
+  if (!Number.isInteger(body.gradePercent) || body.gradePercent < 0 || body.gradePercent > 100) {
+    return { ok: false, status: 400, error: "Grade must be between 0 and 100." };
+  }
+
+  const result = await client.query<{ grade_percent: number; graded_at: Date | string }>(
+    `insert into professor_grades (
+       session_id,
+       professor_id,
+       grade_percent,
+       rubric_scores,
+       comments,
+       graded_at
+     ) values ($1, $2, $3, $4::jsonb, $5::jsonb, now())
+     on conflict (session_id, professor_id) do update
+     set grade_percent = excluded.grade_percent,
+         rubric_scores = excluded.rubric_scores,
+         comments = excluded.comments,
+         graded_at = now()
+     returning grade_percent, graded_at`,
+    [
+      sessionId,
+      professorId,
+      body.gradePercent,
+      JSON.stringify(body.rubricScores),
+      JSON.stringify(body.comments)
+    ]
+  );
+  const row = result.rows[0];
+
+  return {
+    ok: true,
+    value: {
+      gradePercent: row.grade_percent,
+      gradedAt: timeToMs(row.graded_at)
+    }
+  };
 }
 
 function emptyBehavioralRiskForReport() {

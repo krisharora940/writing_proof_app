@@ -784,7 +784,9 @@ export default function WorkspaceClient({
           status: "not_started",
           submittedAt: null,
           lockedAt: null,
-          attemptNumber: null
+          attemptNumber: null,
+          gradePercent: null,
+          gradedAt: null
         }],
         enrollmentLoading: false,
         enrollmentError: ""

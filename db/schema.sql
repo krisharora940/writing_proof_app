@@ -335,6 +335,19 @@ create table if not exists professor_reports (
   check (replay_frame_count >= 0)
 );
 
+create table if not exists professor_grades (
+  session_id uuid not null references writing_sessions(id) on delete cascade,
+  professor_id uuid not null references app_users(id) on delete cascade,
+  grade_percent integer not null,
+  rubric_scores jsonb not null,
+  comments jsonb not null,
+  graded_at timestamptz not null default now(),
+  primary key (session_id, professor_id),
+  check (grade_percent >= 0 and grade_percent <= 100),
+  check (jsonb_typeof(rubric_scores) = 'object'),
+  check (jsonb_typeof(comments) = 'array')
+);
+
 create table if not exists ai_evaluation_logs (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references writing_sessions(id) on delete cascade,
@@ -388,6 +401,7 @@ create index if not exists timed_summaries_session_created_idx on timed_summarie
 create index if not exists comprehension_responses_session_created_idx on comprehension_responses(session_id, created_at desc);
 create index if not exists professor_reports_session_idx on professor_reports(session_id);
 create index if not exists professor_reports_professor_generated_idx on professor_reports(professor_id, generated_at desc);
+create index if not exists professor_grades_professor_graded_idx on professor_grades(professor_id, graded_at desc);
 create index if not exists ai_evaluation_logs_session_created_idx on ai_evaluation_logs(session_id, created_at desc);
 
 update writing_sessions

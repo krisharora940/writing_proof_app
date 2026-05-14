@@ -507,7 +507,9 @@ test("listAssignmentRosterPostgres and listAssignmentSubmissionsPostgres include
       status: "not_started",
       submitted_at: null,
       locked_at: null,
-      attempt_number: null
+      attempt_number: null,
+      grade_percent: null,
+      graded_at: null
     }] }
   ]);
 
@@ -516,6 +518,7 @@ test("listAssignmentRosterPostgres and listAssignmentSubmissionsPostgres include
   assert.equal(submissions.ok, true);
   assert.equal(submissions.value.submissions[0].sessionId, null);
   assert.equal(submissions.value.submissions[0].status, "not_started");
+  assert.equal(submissions.value.submissions[0].gradedAt, null);
   assert.match(submissionsClient.calls[1].sql, /left join lateral/);
 });
 

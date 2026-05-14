@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { EB_Garamond, Inter, Source_Serif_4 } from "next/font/google";
+import ThemeRegistry from "@/components/theme-registry";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,7 +32,9 @@ const sourceSerif = Source_Serif_4({
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${ebGaramond.variable} ${sourceSerif.variable}`}>{children}</body>
+      <body className={`${inter.variable} ${ebGaramond.variable} ${sourceSerif.variable}`}>
+        <ThemeRegistry>{children}</ThemeRegistry>
+      </body>
     </html>
   );
 }

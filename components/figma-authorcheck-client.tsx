@@ -90,6 +90,8 @@ import type {
   ProfessorAssignmentListResponse,
   ProfessorClassListResponse,
   ProfessorReportResponse,
+  SaveProfessorGradeBody,
+  SaveProfessorGradeResponse,
   StudentAssignmentListResponse,
   StudentSessionResponse,
   TimedSummaryBody
@@ -784,9 +786,11 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   );
   const selectedClass = classes.find((classroom) => classroom.id === selectedClassId);
   const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId);
-  const visibleSubmissions = selectedTab === 2
-    ? submissions.filter((submission) => submission.sessionId && reports[submission.sessionId]?.authorCheck.flag !== "green")
-    : submissions;
+  const visibleSubmissions = selectedTab === 0
+    ? submissions.filter((submission) => submission.submittedAt && !submission.gradedAt)
+    : selectedTab === 2
+      ? submissions.filter((submission) => submission.sessionId && reports[submission.sessionId]?.authorCheck.flag !== "green")
+      : submissions;
 
   useEffect(() => {
     if (!selectedClassId) {
@@ -879,7 +883,12 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
                           <TableCell>{submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : "Not submitted"}</TableCell>
                           <TableCell>{report ? <FlagChip flag={report.authorCheck.flag} label={report.authorCheck.flagLabel} /> : <Chip label="Pending" size="small" />}</TableCell>
                           <TableCell>{report ? <SimilarityBar value={report.authorCheck.similarityPercent} /> : "..."}</TableCell>
-                          <TableCell><Button variant="contained" size="small" disabled={!submission.sessionId} onClick={() => router.push(`/professor/submissions/${submission.sessionId}?assignmentId=${selectedAssignmentId}`)}>Review</Button></TableCell>
+                          <TableCell>
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                              {submission.gradedAt && <Chip label={`Graded ${submission.gradePercent}%`} color="success" size="small" />}
+                              <Button variant="contained" size="small" disabled={!submission.sessionId} onClick={() => router.push(`/professor/submissions/${submission.sessionId}?assignmentId=${selectedAssignmentId}`)}>Review</Button>
+                            </Box>
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -958,6 +967,8 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
   const [comments, setComments] = useState<Array<{ lineNumber: number; text: string }>>([]);
   const [newComment, setNewComment] = useState("");
   const [rubricScores, setRubricScores] = useState({ argument: 0, evidence: 0, process: 0, presentation: 0 });
+  const [savedGrade, setSavedGrade] = useState<number | null>(null);
+  const [gradeSaving, setGradeSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -969,6 +980,26 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
 
   const lines = (report?.submittedText || "").split("\n");
   const totalGrade = Math.round(Object.values(rubricScores).reduce((sum, score) => sum + score, 0) / 4);
+  const gradeChanged = savedGrade !== null && savedGrade !== totalGrade;
+
+  async function saveGrade() {
+    if (!sessionId) return;
+    setGradeSaving(true);
+    setError("");
+    try {
+      const body: SaveProfessorGradeBody = {
+        gradePercent: totalGrade,
+        rubricScores,
+        comments
+      };
+      const saved = await postJson<SaveProfessorGradeResponse>(`/api/reports/${sessionId}/grade`, body);
+      setSavedGrade(saved.gradePercent);
+    } catch (nextError) {
+      setError(readError(nextError));
+    } finally {
+      setGradeSaving(false);
+    }
+  }
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#f5f5f5" }}>
@@ -1051,6 +1082,11 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
 
             <Paper sx={{ p: 3, mt: 2 }}>
               <Typography variant="h6" sx={{ mb: 2 }}>Grading Rubric</Typography>
+              {savedGrade !== null && (
+                <Alert severity={gradeChanged ? "info" : "success"} sx={{ mb: 2 }}>
+                  {gradeChanged ? "Rubric scores changed. Save the grade again to update it." : `Grade saved at ${savedGrade}%.`}
+                </Alert>
+              )}
               <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(4, 1fr)" }, gap: 2 }}>
                 {Object.keys(rubricScores).map((key) => (
                   <TextField key={key} label={key[0].toUpperCase() + key.slice(1)} type="number" value={rubricScores[key as keyof typeof rubricScores]} onChange={(event) => setRubricScores({ ...rubricScores, [key]: Math.max(0, Math.min(100, Number(event.target.value))) })} slotProps={{ htmlInput: { min: 0, max: 100 } }} />
@@ -1059,7 +1095,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
               <Box sx={{ display: "flex", gap: 2, alignItems: "center", mt: 3, flexWrap: "wrap" }}>
                 <TextField label={selectedLine === null ? "Select a line to comment" : `Comment on line ${selectedLine + 1}`} value={newComment} onChange={(event) => setNewComment(event.target.value)} sx={{ flexGrow: 1 }} disabled={selectedLine === null} />
                 <Button variant="outlined" disabled={selectedLine === null || !newComment.trim()} onClick={() => { if (selectedLine !== null) setComments([...comments, { lineNumber: selectedLine, text: newComment }]); setNewComment(""); }}>Add Comment</Button>
-                <Button variant="contained" color="success">Grade: {Number.isNaN(totalGrade) ? 0 : totalGrade}%</Button>
+                <Button variant="contained" color="success" disabled={gradeSaving} onClick={saveGrade}>{savedGrade === totalGrade ? "Saved" : "Save Grade"}: {Number.isNaN(totalGrade) ? 0 : totalGrade}%</Button>
               </Box>
             </Paper>
           </>
