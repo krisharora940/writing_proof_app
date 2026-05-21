@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  consumeSignupVerification,
   createSessionCookieValue,
   createCredentialUser,
+  createSignupVerification,
   forbidden,
   getDemoAuthenticatedUser,
   getDemoAuthenticatedUserForCredentials,
@@ -107,6 +109,80 @@ test("credential signup creates a professor account and password login resolves 
   assert.deepEqual(user, { id: "professor-1", name: "New Professor", role: "professor" });
 });
 
+test("signup request stores a pending verification and returns a development code when email delivery is not configured", async () => {
+  const client = {
+    calls: [],
+    async query(sql, params = []) {
+      this.calls.push({ sql, params });
+      if (/from app_users/.test(sql)) return { rows: [] };
+      if (/insert into signup_email_verifications/.test(sql)) return { rows: [] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await createSignupVerification(client, {
+    displayName: "New Professor",
+    email: "Professor@Example.edu",
+    password: "teacherPass123",
+    role: "professor"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.delivery, "development");
+  assert.match(result.code, /^\d{6}$/);
+  assert.equal(client.calls.some((call) => /insert into signup_email_verifications/.test(call.sql)), true);
+});
+
+test("signup verification consumes the code and creates the account", async () => {
+  const passwordHash = await hashPassword("teacherPass123");
+  let storedCodeHash = "";
+  const client = {
+    calls: [],
+    async query(sql, params = []) {
+      this.calls.push({ sql, params });
+      if (/insert into signup_email_verifications/.test(sql)) {
+        storedCodeHash = params[5];
+        return { rows: [] };
+      }
+      if (/from signup_email_verifications/.test(sql)) {
+        return {
+          rows: [{
+            email: "professor@example.edu",
+            display_name: "New Professor",
+            role: "professor",
+            password_hash: passwordHash,
+            invite_code: null,
+            code_hash: storedCodeHash,
+            attempts_remaining: 5,
+            expires_at: new Date(Date.now() + 60_000)
+          }]
+        };
+      }
+      if (/select id, display_name, role from app_users/.test(sql)) return { rows: [] };
+      if (/insert into app_users/.test(sql)) {
+        return { rows: [{ id: "professor-1", display_name: "New Professor", role: "professor" }] };
+      }
+      if (/insert into auth_credentials/.test(sql)) return { rows: [{ user_id: "professor-1" }] };
+      return { rows: [] };
+    }
+  };
+
+  const request = await createSignupVerification(client, {
+    displayName: "New Professor",
+    email: "professor@example.edu",
+    password: "teacherPass123",
+    role: "professor"
+  });
+
+  const result = await consumeSignupVerification(client, {
+    email: "professor@example.edu",
+    code: request.code
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.user, { id: "professor-1", name: "New Professor", role: "professor" });
+});
+
 test("student signup can attach credentials to an invited student account", async () => {
   const client = {
     calls: [],
@@ -173,4 +249,13 @@ test("protected API routes do not accept request identity as authorization input
   assert.match(reportExportRoute, /user\.id/);
   assert.match(reportRoute, /rateLimit\(request, "report-read"/);
   assert.match(reportExportRoute, /rateLimit\(request, "report-export"/);
+});
+
+test("signup route requires verification before account creation", () => {
+  const signupRoute = readFileSync(new URL("../app/api/auth/signup/route.ts", import.meta.url), "utf8");
+  const verifyRoute = readFileSync(new URL("../app/api/auth/signup/verify/route.ts", import.meta.url), "utf8");
+
+  assert.match(signupRoute, /createSignupVerification/);
+  assert.match(verifyRoute, /consumeSignupVerification/);
+  assert.match(verifyRoute, /setSessionCookie/);
 });

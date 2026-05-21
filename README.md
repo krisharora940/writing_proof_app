@@ -13,6 +13,34 @@ npm run dev
 
 Open `http://127.0.0.1:3000/`.
 
+## Deploy
+
+Recommended stack for this repo:
+
+- Vercel for the Next.js app and API routes
+- Neon for Postgres
+- Resend for transactional email
+
+Required production environment variables:
+
+- `DATABASE_URL`
+- `AUTH_SESSION_SECRET`
+- `AUTH_EMAIL_VERIFICATION_SECRET`
+- `RESEND_API_KEY`
+- `AUTH_FROM_EMAIL`
+- `CRON_SECRET`
+
+Pre-launch checks:
+
+```bash
+npm test
+npm run typecheck
+npm run build
+npm run db:migrate
+```
+
+After deploy, confirm `GET /api/health` returns `200`.
+
 ## Current Scope
 
 This MVP implements the first usable loop in a typed React app:

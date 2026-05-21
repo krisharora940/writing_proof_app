@@ -2,6 +2,7 @@ import { NextResponse } from "next/server.js";
 import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { createProfessorAssignmentPostgres, listProfessorAssignmentsPostgres } from "@/lib/postgres-repository";
+import { enforceSameOrigin } from "@/lib/request-security";
 import { createProfessorAssignmentDemo, getDemoRepositoryState, listProfessorAssignmentsDemo } from "@/lib/server-repository";
 import type { CreateProfessorAssignmentBody } from "@/lib/server-boundaries";
 
@@ -19,6 +20,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const blocked = enforceSameOrigin(request, { requireOrigin: true });
+  if (blocked) return blocked;
   const user = await getAuthenticatedUser(request);
   if (!user) return unauthorized();
   if (user.role !== "professor") return forbidden("Only professors can create assignments.");

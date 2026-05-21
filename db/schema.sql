@@ -79,6 +79,23 @@ create table if not exists auth_credentials (
   check (position('scrypt$' in password_hash) = 1)
 );
 
+create table if not exists signup_email_verifications (
+  email text primary key,
+  display_name text not null,
+  role user_role not null,
+  password_hash text not null,
+  invite_code text,
+  code_hash text not null,
+  attempts_remaining integer not null default 5,
+  expires_at timestamptz not null,
+  verified_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (position('scrypt$' in password_hash) = 1),
+  check (attempts_remaining >= 0 and attempts_remaining <= 5),
+  check (length(code_hash) = 64)
+);
+
 create table if not exists assignments (
   id uuid primary key default gen_random_uuid(),
   professor_id uuid not null references app_users(id),

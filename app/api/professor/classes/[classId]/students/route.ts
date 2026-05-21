@@ -2,6 +2,7 @@ import { NextResponse } from "next/server.js";
 import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { enrollAssignmentStudentPostgres, listAssignmentRosterPostgres } from "@/lib/postgres-repository";
+import { enforceSameOrigin } from "@/lib/request-security";
 import { enrollAssignmentStudentDemo, getDemoRepositoryState, listAssignmentRosterDemo } from "@/lib/server-repository";
 import type { EnrollAssignmentStudentBody } from "@/lib/server-boundaries";
 
@@ -24,6 +25,8 @@ export async function GET(request: Request, context: RouteContext) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
+  const blocked = enforceSameOrigin(request, { requireOrigin: true });
+  if (blocked) return blocked;
   const user = await getAuthenticatedUser(request);
   if (!user) return unauthorized();
   if (user.role !== "professor") return forbidden("Only professors can manage class rosters.");

@@ -16,38 +16,70 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
     password: "",
     inviteCode: ""
   });
+  const [verificationCode, setVerificationCode] = useState("");
+  const [signupStep, setSignupStep] = useState<"details" | "verify">("details");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   function chooseRole(nextRole: UserRole) {
     setRole(nextRole);
     setError("");
+    setNotice("");
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
     setError("");
+    setNotice("");
 
     try {
-      const path = mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+      const path = mode === "signup" && signupStep === "verify"
+        ? "/api/auth/signup/verify"
+        : mode === "signup"
+          ? "/api/auth/signup"
+          : "/api/auth/login";
       const response = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(mode === "signup" ? {
-          displayName: form.displayName,
-          email: form.email,
-          password: form.password,
-          role,
-          inviteCode: form.inviteCode || undefined
+          ...(signupStep === "verify" ? {
+            email: form.email,
+            code: verificationCode
+          } : {
+            displayName: form.displayName,
+            email: form.email,
+            password: form.password,
+            role,
+            inviteCode: form.inviteCode || undefined
+          })
         } : {
           email: form.email,
           username: form.email,
           password: form.password
         })
       });
-      const data = await response.json().catch(() => null) as { user?: AuthUser; error?: string } | null;
-      if (!response.ok || !data?.user) throw new Error(data?.error || "Authentication failed.");
+      const data = await response.json().catch(() => null) as {
+        user?: AuthUser;
+        error?: string;
+        delivery?: "email" | "development";
+        expiresInMinutes?: number;
+        code?: string;
+      } | null;
+      if (!response.ok) throw new Error(data?.error || "Authentication failed.");
+
+      if (mode === "signup" && signupStep === "details") {
+        setSignupStep("verify");
+        setNotice(
+          data?.delivery === "development" && data.code
+            ? `Development code: ${data.code}`
+            : `A verification code was sent to ${form.email}. It expires in ${data?.expiresInMinutes || 10} minutes.`
+        );
+        return;
+      }
+
+      if (!data?.user) throw new Error("Authentication failed.");
       router.push(`/${data.user.role}`);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Authentication failed.");
@@ -97,7 +129,27 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
             </button>
           </div>
 
-          {mode === "signup" ? (
+          {mode === "signup" && signupStep === "verify" ? (
+            <>
+              <label htmlFor="email">Email</label>
+              <input
+                id="email"
+                autoComplete="email"
+                type="email"
+                value={form.email}
+                onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+              />
+              <label htmlFor="verification-code">Verification code</label>
+              <input
+                id="verification-code"
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                value={verificationCode}
+                onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="6-digit code"
+              />
+            </>
+          ) : mode === "signup" ? (
             <>
               <label htmlFor="name">Name</label>
               <input
@@ -142,18 +194,43 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
           )}
 
           <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            autoComplete={mode === "login" ? "current-password" : "new-password"}
-            type="password"
-            value={form.password}
-            onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
-          />
+          {mode === "signup" && signupStep === "verify" ? (
+            <input
+              id="password"
+              autoComplete="new-password"
+              type="password"
+              value={form.password}
+              onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+              disabled
+            />
+          ) : (
+            <input
+              id="password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              type="password"
+              value={form.password}
+              onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+            />
+          )}
 
           <button className="primary" disabled={loading} type="submit">
-            {loading ? "Working..." : mode === "login" ? "Log in" : "Create workspace"}
+            {loading ? "Working..." : mode === "login" ? "Log in" : signupStep === "verify" ? "Verify email" : "Send verification code"}
           </button>
+          {mode === "signup" && signupStep === "verify" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSignupStep("details");
+                setVerificationCode("");
+                setError("");
+                setNotice("");
+              }}
+            >
+              Edit details
+            </button>
+          ) : null}
           {error ? <p className="sync-error">{error}</p> : null}
+          {notice ? <p className="note">{notice}</p> : null}
           <p className="note">Passwords must be at least 12 characters and include letters and numbers.</p>
         </form>
       </section>

@@ -26,7 +26,13 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     method: "POST",
     path: "/api/auth/signup",
     access: "student-or-professor",
-    purpose: "Create a professor account or invite-backed student account with server-side password handling."
+    purpose: "Start signup by validating credentials and sending a verification code to the claimed email address."
+  },
+  {
+    method: "POST",
+    path: "/api/auth/signup/verify",
+    access: "student-or-professor",
+    purpose: "Verify the emailed code, create the account, and establish the server-side session."
   },
   {
     method: "GET",
@@ -174,12 +180,17 @@ export type AppendWritingEventRequest = {
   event: Omit<WritingEvent, "id">;
 };
 
-export type SignupBody = {
+export type SignupRequestCodeBody = {
   displayName: string;
   email: string;
   password: string;
   role: "student" | "professor";
   inviteCode?: string;
+};
+
+export type SignupVerifyCodeBody = {
+  email: string;
+  code: string;
 };
 
 export type AppendWritingEventBody = {

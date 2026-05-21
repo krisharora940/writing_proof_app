@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server.js";
 import { getDatabaseClient, hasDatabaseUrl } from "./db.ts";
@@ -35,6 +35,16 @@ type UserRow = {
 type AuthIdentityRow = UserRow;
 type CredentialUserRow = UserRow & {
   password_hash: string;
+};
+type PendingSignupRow = {
+  email: string;
+  display_name: string;
+  role: UserRole;
+  password_hash: string;
+  invite_code: string | null;
+  code_hash: string;
+  attempts_remaining: number;
+  expires_at: Date | string;
 };
 
 const scrypt = promisify(scryptCallback);
@@ -129,6 +139,15 @@ export type SignupResult =
   | { ok: true; user: AuthenticatedUser }
   | { ok: false; status: number; error: string };
 
+export type SignupVerificationRequestResult =
+  | { ok: true; delivery: "email" | "development"; expiresInMinutes: number; code?: string }
+  | { ok: false; status: number; error: string };
+
+export type SignupVerificationConfirmInput = {
+  email: string;
+  code: string;
+};
+
 export async function createCredentialUser(client: QueryClient, input: SignupInput): Promise<SignupResult> {
   const displayName = input.displayName.trim();
   const email = normalizeEmail(input.email);
@@ -145,47 +164,168 @@ export async function createCredentialUser(client: QueryClient, input: SignupInp
   }
 
   const passwordHash = await hashPassword(input.password);
+  return createCredentialUserWithPasswordHash(client, {
+    displayName,
+    email,
+    passwordHash,
+    role: input.role
+  });
+}
+
+export async function createSignupVerification(
+  client: QueryClient,
+  input: SignupInput
+): Promise<SignupVerificationRequestResult> {
+  const displayName = input.displayName.trim();
+  const email = normalizeEmail(input.email);
+  const passwordError = validatePassword(input.password);
+
+  if (!displayName) return { ok: false, status: 400, error: "Name is required." };
+  if (!email) return { ok: false, status: 400, error: "A valid email is required." };
+  if (input.role !== "student" && input.role !== "professor") {
+    return { ok: false, status: 400, error: "Role must be student or professor." };
+  }
+  if (passwordError) return { ok: false, status: 400, error: passwordError };
+  if (!canCreateRole(input.role, input.inviteCode)) {
+    return { ok: false, status: 403, error: "A valid invite is required for this role." };
+  }
+
+  const existingResult = await client.query<{
+    id: string;
+    role: UserRole;
+    has_credentials: boolean;
+  }>(
+    `select app_users.id,
+            app_users.role,
+            exists(select 1 from auth_credentials where auth_credentials.user_id = app_users.id) as has_credentials
+     from app_users
+     where app_users.email = $1`,
+    [email]
+  );
+  const existingUser = existingResult.rows[0];
+  if (existingUser?.has_credentials) {
+    return { ok: false, status: 409, error: "An account already exists for this email." };
+  }
+  if (existingUser && existingUser.role !== input.role) {
+    return { ok: false, status: 409, error: "Unable to create account for this email." };
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  const code = createVerificationCode();
+  const codeHash = hashVerificationCode(email, code);
+  const expiresInMinutes = 10;
+
+  await client.query(
+    `insert into signup_email_verifications (
+       email,
+       display_name,
+       role,
+       password_hash,
+       invite_code,
+       code_hash,
+       attempts_remaining,
+       expires_at,
+       created_at,
+       updated_at
+     )
+     values ($1, $2, $3, $4, $5, $6, 5, now() + interval '10 minutes', now(), now())
+     on conflict (email) do update set
+       display_name = excluded.display_name,
+       role = excluded.role,
+       password_hash = excluded.password_hash,
+       invite_code = excluded.invite_code,
+       code_hash = excluded.code_hash,
+       attempts_remaining = 5,
+       expires_at = excluded.expires_at,
+       verified_at = null,
+       created_at = now(),
+       updated_at = now()`,
+    [email, displayName, input.role, passwordHash, input.inviteCode || null, codeHash]
+  );
+
+  const delivery = await sendSignupVerificationEmail(email, code);
+  return delivery.ok
+    ? { ok: true, delivery: delivery.delivery, expiresInMinutes, code: delivery.code }
+    : { ok: false, status: delivery.status, error: delivery.error };
+}
+
+export async function consumeSignupVerification(
+  client: QueryClient,
+  input: SignupVerificationConfirmInput
+): Promise<SignupResult> {
+  const email = normalizeEmail(input.email);
+  const code = input.code.trim();
+  if (!email) return { ok: false, status: 400, error: "A valid email is required." };
+  if (!/^\d{6}$/.test(code)) return { ok: false, status: 400, error: "Verification code must be 6 digits." };
 
   await client.query("begin");
   try {
-    const existingResult = await client.query<UserRow>(
-      "select id, display_name, role from app_users where email = $1 for update",
+    const pendingResult = await client.query<PendingSignupRow>(
+      `select email, display_name, role, password_hash, invite_code, code_hash, attempts_remaining, expires_at
+       from signup_email_verifications
+       where email = $1
+       for update`,
       [email]
     );
-    let user = existingResult.rows[0];
-    if (user && user.role !== input.role) {
+    const pending = pendingResult.rows[0];
+    if (!pending) {
       await client.query("rollback");
-      return { ok: false, status: 409, error: "Unable to create account for this email." };
+      return { ok: false, status: 404, error: "No signup verification is pending for this email." };
     }
 
-    if (!user) {
-      const inserted = await client.query<UserRow>(
-        `insert into app_users (email, display_name, role)
-         values ($1, $2, $3)
-         returning id, display_name, role`,
-        [email, displayName, input.role]
+    if (pending.attempts_remaining <= 0 || new Date(pending.expires_at).getTime() <= Date.now()) {
+      await client.query("delete from signup_email_verifications where email = $1", [email]);
+      await client.query("commit");
+      return { ok: false, status: 410, error: "Verification code expired. Request a new code." };
+    }
+
+    if (!timingSafeStringEqual(hashVerificationCode(email, code), pending.code_hash)) {
+      await client.query(
+        `update signup_email_verifications
+         set attempts_remaining = attempts_remaining - 1,
+             updated_at = now()
+         where email = $1`,
+        [email]
       );
-      user = inserted.rows[0];
+      await client.query("commit");
+      return { ok: false, status: 400, error: "Invalid verification code." };
     }
 
-    const credentialResult = await client.query<{ user_id: string }>(
-      `insert into auth_credentials (user_id, email, password_hash)
-       values ($1, $2, $3)
-       on conflict (email) do nothing
-       returning user_id`,
-      [user.id, email, passwordHash]
-    );
-    if (!credentialResult.rows[0]) {
+    if (!canCreateRole(pending.role, pending.invite_code || undefined)) {
       await client.query("rollback");
-      return { ok: false, status: 409, error: "Unable to create account for this email." };
+      return { ok: false, status: 403, error: "A valid invite is required for this role." };
     }
 
+    const created = await createCredentialUserWithPasswordHashInTransaction(client, {
+      displayName: pending.display_name,
+      email,
+      passwordHash: pending.password_hash,
+      role: pending.role
+    });
+    if (!created.ok) {
+      await client.query("rollback");
+      return created;
+    }
+
+    await client.query("delete from signup_email_verifications where email = $1", [email]);
     await client.query("commit");
-    return { ok: true, user: { id: user.id, name: user.display_name, role: user.role } };
+    return created;
   } catch (error) {
     await client.query("rollback");
     throw error;
   }
+}
+
+export async function cleanupExpiredSignupVerifications(client: QueryClient) {
+  const result = await client.query<{ deleted_count: string }>(
+    `with deleted as (
+       delete from signup_email_verifications
+       where expires_at <= now()
+       returning 1
+     )
+     select count(*)::text as deleted_count from deleted`
+  );
+  return Number(result.rows[0]?.deleted_count || 0);
 }
 
 export function getDemoAuthenticatedUser(userId: string): AuthenticatedUser | null {
@@ -326,6 +466,111 @@ function timingSafeStringEqual(actual: string, expected: string) {
   const expectedBuffer = Buffer.from(expected);
   if (actualBuffer.length !== expectedBuffer.length) return false;
   return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function createVerificationCode() {
+  return randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+function hashVerificationCode(email: string, code: string) {
+  return createHmac("sha256", verificationSecret())
+    .update(`${normalizeEmail(email)}:${code}`)
+    .digest("hex");
+}
+
+function verificationSecret() {
+  return process.env.AUTH_EMAIL_VERIFICATION_SECRET || sessionSecret();
+}
+
+async function sendSignupVerificationEmail(email: string, code: string) {
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const from = process.env.AUTH_FROM_EMAIL || process.env.RESEND_FROM_EMAIL;
+  const subject = "Your AuthorCheck verification code";
+  const text = `Your AuthorCheck verification code is ${code}. It expires in 10 minutes.`;
+
+  if (!resendApiKey || !from) {
+    if (process.env.NODE_ENV === "production") {
+      return { ok: false as const, status: 503, error: "Email delivery is not configured." };
+    }
+    console.info(`[auth] signup verification code for ${email}: ${code}`);
+    return { ok: true as const, delivery: "development" as const, code };
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resendApiKey}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject,
+      text,
+      html: `<p>Your AuthorCheck verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`
+    })
+  });
+  if (!response.ok) {
+    return { ok: false as const, status: 502, error: "Unable to send verification email." };
+  }
+
+  return { ok: true as const, delivery: "email" as const };
+}
+
+async function createCredentialUserWithPasswordHash(
+  client: QueryClient,
+  input: { displayName: string; email: string; passwordHash: string; role: UserRole }
+): Promise<SignupResult> {
+  await client.query("begin");
+  try {
+    const result = await createCredentialUserWithPasswordHashInTransaction(client, input);
+    if (!result.ok) {
+      await client.query("rollback");
+      return result;
+    }
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+async function createCredentialUserWithPasswordHashInTransaction(
+  client: QueryClient,
+  input: { displayName: string; email: string; passwordHash: string; role: UserRole }
+): Promise<SignupResult> {
+  const existingResult = await client.query<UserRow>(
+    "select id, display_name, role from app_users where email = $1 for update",
+    [input.email]
+  );
+  let user = existingResult.rows[0];
+  if (user && user.role !== input.role) {
+    return { ok: false, status: 409, error: "Unable to create account for this email." };
+  }
+
+  if (!user) {
+    const inserted = await client.query<UserRow>(
+      `insert into app_users (email, display_name, role)
+       values ($1, $2, $3)
+       returning id, display_name, role`,
+      [input.email, input.displayName, input.role]
+    );
+    user = inserted.rows[0];
+  }
+
+  const credentialResult = await client.query<{ user_id: string }>(
+    `insert into auth_credentials (user_id, email, password_hash)
+     values ($1, $2, $3)
+     on conflict (email) do nothing
+     returning user_id`,
+    [user.id, input.email, input.passwordHash]
+  );
+  if (!credentialResult.rows[0]) {
+    return { ok: false, status: 409, error: "Unable to create account for this email." };
+  }
+
+  return { ok: true, user: { id: user.id, name: user.display_name, role: user.role } };
 }
 
 function sessionSecret() {

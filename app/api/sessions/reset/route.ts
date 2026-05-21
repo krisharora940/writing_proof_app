@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server.js";
 import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
+import { enforceSameOrigin } from "@/lib/request-security";
 
 export async function POST(request: Request) {
+  const blocked = enforceSameOrigin(request, { requireOrigin: true });
+  if (blocked) return blocked;
   const user = await getAuthenticatedUser(request);
   if (!user) return unauthorized();
   if (user.role !== "student") return forbidden("Only students can access student session routes.");

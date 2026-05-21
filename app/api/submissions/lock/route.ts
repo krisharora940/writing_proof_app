@@ -2,10 +2,13 @@ import { NextResponse } from "next/server.js";
 import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { lockSubmissionPostgres } from "@/lib/postgres-repository";
+import { enforceSameOrigin } from "@/lib/request-security";
 import { getDemoRepositoryState, lockSubmission } from "@/lib/server-repository";
 import type { LockSubmissionBody } from "@/lib/server-boundaries";
 
 export async function POST(request: Request) {
+  const blocked = enforceSameOrigin(request, { requireOrigin: true });
+  if (blocked) return blocked;
   const user = await getAuthenticatedUser(request);
   if (!user) return unauthorized();
   if (user.role !== "student") return forbidden("Only students can lock submissions.");

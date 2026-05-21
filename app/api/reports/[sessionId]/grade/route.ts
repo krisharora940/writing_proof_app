@@ -2,6 +2,7 @@ import { NextResponse } from "next/server.js";
 import { forbidden, getAuthenticatedUser, unauthorized } from "@/lib/auth";
 import { getDatabaseClient, hasDatabaseUrl } from "@/lib/db";
 import { saveProfessorGradePostgres } from "@/lib/postgres-repository";
+import { enforceSameOrigin } from "@/lib/request-security";
 import { getDemoRepositoryState, saveProfessorGradeDemo } from "@/lib/server-repository";
 import type { SaveProfessorGradeBody } from "@/lib/server-boundaries";
 
@@ -10,6 +11,8 @@ type RouteContext = {
 };
 
 export async function POST(request: Request, context: RouteContext) {
+  const blocked = enforceSameOrigin(request, { requireOrigin: true });
+  if (blocked) return blocked;
   const user = await getAuthenticatedUser(request);
   if (!user) return unauthorized();
   if (user.role !== "professor") return forbidden("Only professors can save grades.");
