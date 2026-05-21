@@ -1,73 +1,195 @@
-# Verified Writing MVP
+# AuthorCheck
 
-Next.js prototype for a proof-of-process writing product.
+## Writing Integrity in the Age of AI
 
-See [AGENTIC_WORKFLOW.md](AGENTIC_WORKFLOW.md) for the agent workflow and [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) for the product/engineering roadmap.
+AuthorCheck is a writing-process verification platform built for higher education.
 
-## Run
+Its purpose is not to “catch AI cheating.”
 
-```bash
-npm install
-npm run dev
-```
+Its purpose is to restore confidence in writing-based assessment by making the writing process visible, explainable, and defensible.
 
-Open `http://127.0.0.1:3000/`.
+Traditional AI detectors attempt to answer:
 
-## Deploy
+> “Was AI used?”
 
-Recommended stack for this repo:
+AuthorCheck approaches the problem differently.
 
-- Vercel for the Next.js app and API routes
-- Neon for Postgres
-- Resend for transactional email
+It asks:
 
-Required production environment variables:
+> “What does the writing process actually look like?”
 
-- `DATABASE_URL`
-- `AUTH_SESSION_SECRET`
-- `AUTH_EMAIL_VERIFICATION_SECRET`
-- `RESEND_API_KEY`
-- `AUTH_FROM_EMAIL`
-- `CRON_SECRET`
+That distinction matters.
 
-Pre-launch checks:
+Across higher education, faculty are increasingly skeptical of black-box AI detection systems due to false positives, unreliable scoring, and the institutional risk of accusing students without strong evidence. At the same time, instructors still need ways to preserve the legitimacy of essays, writing assignments, and take-home assessments. 
 
-```bash
-npm test
-npm run typecheck
-npm run build
-npm run db:migrate
-```
+AuthorCheck exists in that gap.
 
-After deploy, confirm `GET /api/health` returns `200`.
+---
 
-## Current Scope
+# The Problem
 
-This MVP implements the first usable loop in a typed React app:
+Writing-intensive education is under pressure.
 
-- student writing editor
-- insert/delete/paste event capture
-- active writing time and paste metrics
-- paper submission lock
-- timed post-submission summary
-- neutral professor evidence report
-- rewind timeline replay
+Faculty are adapting by:
 
-The report intentionally avoids final scores and misconduct language. It presents factual observations only.
+* inspecting document revision histories,
+* requiring staged drafts,
+* conducting oral defenses,
+* redesigning assignments,
+* introducing in-class writing,
+* and building manual verification workflows. 
 
-## Current Architecture
+These workflows are fragmented, inconsistent, and time-consuming.
 
-- `app/page.tsx`: student/professor UI and local client state
-- `app/globals.css`: visual system and layout
-- `lib/writing-events.ts`: typed event model, metrics, process observations, and summary comparison fallback
+Most instructors do not want:
 
-## Next Engineering Steps
+* surveillance-heavy tooling,
+* probabilistic accusation systems,
+* or more investigative overhead.
 
-Move from client-only state to persisted product behavior:
+They want:
 
-- Postgres event log
-- immutable submission snapshots
-- server-side replay reconstruction
-- authenticated student/professor roles
-- LLM-backed summary-to-paper comparison with schema validation
-- Playwright tests for the full submission flow
+* process visibility,
+* stronger evidence,
+* lower ambiguity,
+* and fairer integrity conversations.
+
+---
+
+# What AuthorCheck Does
+
+AuthorCheck provides structured authorship evidence through writing-process visibility.
+
+The platform is designed to help educators:
+
+* observe drafting behavior,
+* evaluate revision patterns,
+* understand writing progression,
+* and establish confidence in student authorship without relying solely on AI-detection scores.
+
+The product is intentionally positioned as:
+
+* a process-verification layer,
+* an authorship evidence platform,
+* and a trust-preservation tool for writing-intensive education.
+
+Not a policing engine.
+
+---
+
+# Strategic Philosophy
+
+AuthorCheck is built around several core beliefs:
+
+## 1. AI Detection Alone Is Not Durable
+
+The future of academic integrity cannot depend entirely on statistical AI-detection confidence scores.
+
+Detector-centric systems face:
+
+* false-positive concerns,
+* explainability problems,
+* adversarial bypass behavior,
+* and institutional distrust. 
+
+Process evidence is more explainable, more defensible, and more useful in real academic conversations.
+
+---
+
+## 2. The Writing Process Matters
+
+Authentic writing is not merely the final output.
+
+It includes:
+
+* drafting,
+* revision,
+* iteration,
+* reflection,
+* and comprehension.
+
+AuthorCheck focuses on preserving visibility into those behaviors.
+
+---
+
+## 3. Faculty Need Better Workflows, Not More Fear
+
+Most instructors do not want to become AI investigators.
+
+They want systems that:
+
+* reduce ambiguity,
+* support fair evaluation,
+* preserve pedagogical trust,
+* and maintain the viability of essay-based learning.
+
+---
+
+# Initial Focus
+
+AuthorCheck’s initial strategic focus is:
+
+* writing-intensive humanities courses,
+* first-year composition,
+* literature and general education writing programs,
+* and faculty-led pilots at teaching-oriented institutions. 
+
+The project is currently optimized for:
+
+* rapid iteration,
+* founder-led deployment,
+* workflow discovery,
+* and institutional validation.
+
+---
+
+# Long-Term Vision
+
+The long-term goal is larger than AI detection.
+
+AuthorCheck aims to help preserve:
+
+* rigorous writing education,
+* authentic intellectual engagement,
+* and trust in written assessment
+  during a period where generative AI is fundamentally reshaping education.
+
+The core mission is simple:
+
+> Keep writing-based learning viable in the AI era.
+
+---
+
+# Research Foundation
+
+This project is informed by:
+
+* higher-education academic integrity research,
+* faculty workflow analysis,
+* AI-detection reliability concerns,
+* institutional adoption realities,
+* and strategic go-to-market frameworks. 
+
+Key strategic conclusions synthesized from the research include:
+
+* faculty increasingly distrust black-box AI detectors,
+* educators are moving toward process-based verification,
+* and writing-process evidence may be more institutionally durable than probabilistic accusation systems. 
+
+---
+
+# Current Status
+
+AuthorCheck is currently in MVP-stage development with ongoing refinement around:
+
+* backend rigor,
+* workflow validation,
+* faculty research,
+* and pilot preparation.
+
+The current product direction remains a working hypothesis pending:
+
+* faculty interviews,
+* classroom testing,
+* workflow observation,
+* and institutional feedback. 
