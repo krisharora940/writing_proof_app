@@ -4,25 +4,17 @@
 
 AuthorCheck is a writing-process verification platform built for higher education.
 
-Its purpose is not to “catch AI cheating.”
+Across higher education, faculty are increasingly skeptical of black-box AI detection systems due to false positives, unreliable scoring, and the institutional risk of accusing students without strong evidence. At the same time, instructors still need ways to preserve the legitimacy of writing assignments and other take-home assessments. 
 
-Its purpose is to restore confidence in writing-based assessment by making the writing process visible, explainable, and defensible.
+Its purpose is to restore confidence in writing-based assessment by making the writing process visible, explainable, and defensible, while removing accusatory implications when definite evidence simply does not exist.
 
 Traditional AI detectors attempt to answer:
 
 > “Was AI used?”
 
-AuthorCheck approaches the problem differently.
-
-It asks:
+AuthorCheck approaches the problem differently. It asks:
 
 > “What does the writing process actually look like?”
-
-That distinction matters.
-
-Across higher education, faculty are increasingly skeptical of black-box AI detection systems due to false positives, unreliable scoring, and the institutional risk of accusing students without strong evidence. At the same time, instructors still need ways to preserve the legitimacy of essays, writing assignments, and take-home assessments. 
-
-AuthorCheck exists in that gap.
 
 ---
 
