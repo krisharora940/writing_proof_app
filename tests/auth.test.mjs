@@ -14,6 +14,7 @@ import {
   hashPassword,
   isDemoLoginAllowed,
   readSessionUserId,
+  resendSignupVerification,
   SESSION_COOKIE,
   unauthorized,
   validatePassword,
@@ -183,6 +184,113 @@ test("signup verification consumes the code and creates the account", async () =
   assert.deepEqual(result.user, { id: "professor-1", name: "New Professor", role: "professor" });
 });
 
+test("resend signup verification reissues a code for a pending signup", async () => {
+  let updatedCodeHash = "";
+  const client = {
+    async query(sql, params = []) {
+      if (/from signup_email_verifications/.test(sql)) {
+        return {
+          rows: [{
+            email: "professor@example.edu",
+            display_name: "New Professor",
+            role: "professor",
+            password_hash: "scrypt$test$hash",
+            invite_code: null,
+            code_hash: "old-hash",
+            attempts_remaining: 2,
+            expires_at: new Date(Date.now() + 60_000)
+          }]
+        };
+      }
+      if (/update signup_email_verifications/.test(sql)) {
+        updatedCodeHash = params[1];
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await resendSignupVerification(client, "professor@example.edu");
+  assert.equal(result.ok, true);
+  assert.equal(result.delivery, "development");
+  assert.match(result.code, /^\d{6}$/);
+  assert.notEqual(updatedCodeHash, "");
+});
+
+test("signup verification rejects invalid codes", async () => {
+  const passwordHash = await hashPassword("teacherPass123");
+  let storedCodeHash = "";
+  const client = {
+    async query(sql, params = []) {
+      if (/insert into signup_email_verifications/.test(sql)) {
+        storedCodeHash = params[5];
+        return { rows: [] };
+      }
+      if (/from signup_email_verifications/.test(sql)) {
+        return {
+          rows: [{
+            email: "professor@example.edu",
+            display_name: "New Professor",
+            role: "professor",
+            password_hash: passwordHash,
+            invite_code: null,
+            code_hash: storedCodeHash,
+            attempts_remaining: 5,
+            expires_at: new Date(Date.now() + 60_000)
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+
+  await createSignupVerification(client, {
+    displayName: "New Professor",
+    email: "professor@example.edu",
+    password: "teacherPass123",
+    role: "professor"
+  });
+
+  const result = await consumeSignupVerification(client, {
+    email: "professor@example.edu",
+    code: "000000"
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.equal(result.error, "Invalid verification code.");
+});
+
+test("signup verification rejects expired codes", async () => {
+  const passwordHash = await hashPassword("teacherPass123");
+  const client = {
+    async query(sql) {
+      if (/from signup_email_verifications/.test(sql)) {
+        return {
+          rows: [{
+            email: "professor@example.edu",
+            display_name: "New Professor",
+            role: "professor",
+            password_hash: passwordHash,
+            invite_code: null,
+            code_hash: "expired-hash",
+            attempts_remaining: 5,
+            expires_at: new Date(Date.now() - 60_000)
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await consumeSignupVerification(client, {
+    email: "professor@example.edu",
+    code: "123456"
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 410);
+  assert.equal(result.error, "Verification code expired. Request a new code.");
+});
+
 test("student signup can attach credentials to an invited student account", async () => {
   const client = {
     calls: [],
@@ -254,8 +362,11 @@ test("protected API routes do not accept request identity as authorization input
 test("signup route requires verification before account creation", () => {
   const signupRoute = readFileSync(new URL("../app/api/auth/signup/route.ts", import.meta.url), "utf8");
   const verifyRoute = readFileSync(new URL("../app/api/auth/signup/verify/route.ts", import.meta.url), "utf8");
+  const resendRoute = readFileSync(new URL("../app/api/auth/signup/resend/route.ts", import.meta.url), "utf8");
 
   assert.match(signupRoute, /createSignupVerification/);
   assert.match(verifyRoute, /consumeSignupVerification/);
   assert.match(verifyRoute, /setSessionCookie/);
+  assert.match(resendRoute, /resendSignupVerification/);
+  assert.match(resendRoute, /rateLimit\(request, "auth-signup-resend"/);
 });

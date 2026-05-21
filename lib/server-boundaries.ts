@@ -35,6 +35,12 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     purpose: "Verify the emailed code, create the account, and establish the server-side session."
   },
   {
+    method: "POST",
+    path: "/api/auth/signup/resend",
+    access: "student-or-professor",
+    purpose: "Reissue a signup verification code for an existing pending signup."
+  },
+  {
     method: "GET",
     path: "/api/auth/me",
     access: "student-or-professor",
@@ -191,6 +197,10 @@ export type SignupRequestCodeBody = {
 export type SignupVerifyCodeBody = {
   email: string;
   code: string;
+};
+
+export type SignupResendCodeBody = {
+  email: string;
 };
 
 export type AppendWritingEventBody = {

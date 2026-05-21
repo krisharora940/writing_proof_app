@@ -59,3 +59,26 @@ test("health and maintenance routes exist for launch operations", () => {
   assert.match(cleanupRoute, /CRON_SECRET/);
   assert.match(cleanupRoute, /cleanupExpiredSignupVerifications/);
 });
+
+test("cookie-auth mutation routes enforce same-origin checks", () => {
+  const protectedRoutes = [
+    "../app/api/auth/logout/route.ts",
+    "../app/api/writing-events/route.ts",
+    "../app/api/submissions/lock/route.ts",
+    "../app/api/timed-summaries/route.ts",
+    "../app/api/professor/classes/route.ts",
+    "../app/api/professor/classes/[classId]/students/route.ts",
+    "../app/api/professor/assignments/route.ts",
+    "../app/api/professor/assignments/[assignmentId]/students/route.ts",
+    "../app/api/replay/route.ts",
+    "../app/api/reports/[sessionId]/grade/route.ts",
+    "../app/api/sessions/reset/route.ts",
+    "../app/api/summary-comparison/route.ts"
+  ];
+
+  protectedRoutes.forEach((path) => {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(source, /enforceSameOrigin/);
+    assert.match(source, /requireOrigin:\s*true/);
+  });
+});

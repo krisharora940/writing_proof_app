@@ -148,6 +148,10 @@ export type SignupVerificationConfirmInput = {
   code: string;
 };
 
+export type SignupVerificationResendResult =
+  | { ok: true; delivery: "email" | "development"; expiresInMinutes: number; code?: string }
+  | { ok: false; status: number; error: string };
+
 export async function createCredentialUser(client: QueryClient, input: SignupInput): Promise<SignupResult> {
   const displayName = input.displayName.trim();
   const email = normalizeEmail(input.email);
@@ -314,6 +318,44 @@ export async function consumeSignupVerification(
     await client.query("rollback");
     throw error;
   }
+}
+
+export async function resendSignupVerification(
+  client: QueryClient,
+  emailInput: string
+): Promise<SignupVerificationResendResult> {
+  const email = normalizeEmail(emailInput);
+  if (!email) return { ok: false, status: 400, error: "A valid email is required." };
+
+  const result = await client.query<PendingSignupRow>(
+    `select email, display_name, role, password_hash, invite_code, code_hash, attempts_remaining, expires_at
+     from signup_email_verifications
+     where email = $1`,
+    [email]
+  );
+  const pending = result.rows[0];
+  if (!pending) {
+    return { ok: false, status: 404, error: "No signup verification is pending for this email." };
+  }
+
+  const code = createVerificationCode();
+  const codeHash = hashVerificationCode(email, code);
+  const expiresInMinutes = 10;
+
+  await client.query(
+    `update signup_email_verifications
+     set code_hash = $2,
+         attempts_remaining = 5,
+         expires_at = now() + interval '10 minutes',
+         updated_at = now()
+     where email = $1`,
+    [email, codeHash]
+  );
+
+  const delivery = await sendSignupVerificationEmail(email, code);
+  return delivery.ok
+    ? { ok: true, delivery: delivery.delivery, expiresInMinutes, code: delivery.code }
+    : { ok: false, status: delivery.status, error: delivery.error };
 }
 
 export async function cleanupExpiredSignupVerifications(client: QueryClient) {

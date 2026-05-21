@@ -88,6 +88,36 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
     }
   }
 
+  async function resendCode() {
+    setLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch("/api/auth/signup/resend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: form.email })
+      });
+      const data = await response.json().catch(() => null) as {
+        error?: string;
+        delivery?: "email" | "development";
+        expiresInMinutes?: number;
+        code?: string;
+      } | null;
+      if (!response.ok) throw new Error(data?.error || "Unable to resend verification code.");
+      setNotice(
+        data?.delivery === "development" && data.code
+          ? `Development code: ${data.code}`
+          : `A new verification code was sent to ${form.email}. It expires in ${data?.expiresInMinutes || 10} minutes.`
+      );
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : "Unable to resend verification code.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const title = mode === "login" ? "Log in to AuthorCheck" : "Create an AuthorCheck workspace";
   const subtitle = mode === "login"
     ? "Use your existing student or professor credentials."
@@ -227,6 +257,11 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
               }}
             >
               Edit details
+            </button>
+          ) : null}
+          {mode === "signup" && signupStep === "verify" ? (
+            <button type="button" onClick={() => void resendCode()} disabled={loading || !form.email}>
+              Resend code
             </button>
           ) : null}
           {error ? <p className="sync-error">{error}</p> : null}

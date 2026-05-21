@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const pageSource = readFileSync(new URL("../components/figma-authorcheck-client.tsx", import.meta.url), "utf8");
+const authPageSource = readFileSync(new URL("../components/auth-page-client.tsx", import.meta.url), "utf8");
 const figmaSource = pageSource;
 const landingSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 const loginSource = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
@@ -46,6 +47,12 @@ test("frontend hydrates identity and student state from backend session APIs", (
   assert.doesNotMatch(pageSource, /Student demo/);
   assert.doesNotMatch(pageSource, /Professor demo/);
   assert.match(pageSource, /\/api\/auth\/logout/);
+});
+
+test("signup flow supports email verification resend", () => {
+  assert.match(authPageSource, /\/api\/auth\/signup\/verify/);
+  assert.match(authPageSource, /\/api\/auth\/signup\/resend/);
+  assert.match(authPageSource, /Resend code/);
 });
 
 test("student dashboard lists assigned work and opens the selected assignment", () => {
