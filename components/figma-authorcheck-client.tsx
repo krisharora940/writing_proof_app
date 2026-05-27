@@ -308,6 +308,12 @@ function LoginPage({ role }: { role: UserRole }) {
                 Login here
               </Button>
             </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Need a new account?{" "}
+              <Button variant="text" onClick={() => router.push("/signup")} sx={{ textTransform: "none", fontWeight: 600 }}>
+                Sign up
+              </Button>
+            </Typography>
             <Button variant="text" onClick={() => router.push("/")} sx={{ mt: 2, textTransform: "none", color: "text.secondary" }}>
               Back to Home
             </Button>
