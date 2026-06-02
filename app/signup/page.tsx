@@ -1,5 +1,6 @@
-import AuthPageClient from "@/components/auth-page-client";
+import { Suspense } from "react";
+import { AuthorCheckApp } from "@/components/figma-authorcheck-client";
 
 export default function SignupPage() {
-  return <AuthPageClient mode="signup" />;
+  return <Suspense><AuthorCheckApp page="signup" /></Suspense>;
 }

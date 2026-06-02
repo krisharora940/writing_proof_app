@@ -1,13 +1,18 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type {
+  AcceptClassInvitationResponse,
   AppendWritingEventRequest,
   AssignmentRosterResponse,
   AssignmentSubmissionListResponse,
+  ClassInvitationLookupResponse,
   CreateProfessorAssignmentBody,
   CreateProfessorAssignmentResponse,
   CreateProfessorClassBody,
   CreateProfessorClassResponse,
   EnrollAssignmentStudentBody,
+  InviteClassStudentsBody,
+  InviteClassStudentsResponse,
+  JoinClassByCodeResponse,
   LockSubmissionRequest,
   RemoveAssignmentStudentBody,
   ProfessorAssignmentListResponse,
@@ -23,6 +28,7 @@ import type {
   StudentSessionResponse,
   TimedSummaryRequest
 } from "./server-boundaries";
+import { getAppBaseUrl, normalizeEmail, sendTransactionalEmail } from "./auth.ts";
 import { evaluateSummaryComparison, writeAiEvaluationLog } from "./ai-evaluation.ts";
 import {
   generateBehavioralRiskEvidenceTags,
@@ -138,6 +144,7 @@ type AssignmentRow = {
   title: string;
   prompt: string;
   class_id: string | null;
+  join_code: string | null;
   due_at: Date | string | null;
   created_at: Date | string;
 };
@@ -145,6 +152,7 @@ type AssignmentRow = {
 type ProfessorClassRow = {
   id: string;
   name: string;
+  join_code: string | null;
   student_count: number;
   created_at: Date | string;
 };
@@ -173,10 +181,23 @@ type RosterRow = {
   enrolled_at: Date | string;
 };
 
+type ClassInvitationRow = {
+  id: string;
+  email: string;
+  created_at: Date | string;
+  expires_at: Date | string;
+  accepted_at: Date | string | null;
+  assignment_id?: string;
+  class_name?: string;
+  join_code?: string | null;
+};
+
 type StudentAssignmentRow = {
   assignment_id: string;
   title: string;
   prompt: string;
+  class_id: string | null;
+  class_name: string | null;
   due_at: Date | string | null;
   enrolled_at: Date | string;
   session_id: string | null;
@@ -195,6 +216,8 @@ export async function listStudentAssignmentsPostgres(
        assignments.id as assignment_id,
        assignments.title,
        assignments.prompt,
+       assignments.class_id,
+       class_assignments.title as class_name,
        assignments.due_at,
        assignment_students.created_at as enrolled_at,
        latest_session.id as session_id,
@@ -204,6 +227,7 @@ export async function listStudentAssignmentsPostgres(
        latest_session.attempt_number
      from assignment_students
      join assignments on assignments.id = assignment_students.assignment_id
+     left join assignments as class_assignments on class_assignments.id = assignments.class_id
      left join lateral (
        select id, status, submitted_at, locked_at, attempt_number
        from writing_sessions
@@ -226,6 +250,8 @@ export async function listStudentAssignmentsPostgres(
         id: row.assignment_id,
         title: row.title,
         prompt: row.prompt,
+        classId: row.class_id ?? null,
+        className: row.class_name ?? null,
         dueAt: nullableTimeToMs(row.due_at),
         enrolledAt: timeToMs(row.enrolled_at),
         sessionId: row.session_id,
@@ -442,6 +468,7 @@ export async function listProfessorClassesPostgres(
     `select
        assignments.id,
        assignments.title as name,
+       assignments.join_code,
        assignments.created_at,
        count(assignment_students.student_id)::int as student_count
      from assignments
@@ -454,15 +481,21 @@ export async function listProfessorClassesPostgres(
     [professorId]
   );
 
+  const classes = await Promise.all(result.rows.map(async (row) => {
+    const joinCode = row.join_code || await assignClassJoinCodePostgres(client, row.id);
+    return {
+      id: row.id,
+      name: row.name,
+      joinCode,
+      studentCount: Number(row.student_count),
+      createdAt: timeToMs(row.created_at)
+    };
+  }));
+
   return {
     ok: true,
     value: {
-      classes: result.rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        studentCount: Number(row.student_count),
-        createdAt: timeToMs(row.created_at)
-      }))
+      classes
     }
   };
 }
@@ -474,14 +507,15 @@ export async function createProfessorClassPostgres(
 ): Promise<MutationResult<CreateProfessorClassResponse>> {
   const name = body.name.trim();
   if (!name) return { ok: false, status: 400, error: "Class name is required." };
+  const joinCode = createClassJoinCode();
 
   await client.query("begin");
   try {
     const classResult = await client.query<AssignmentRow>(
-      `insert into assignments (professor_id, title, prompt, kind)
-       values ($1, $2, $3, 'class')
-       returning id, title, prompt, class_id, due_at, created_at`,
-      [professorId, name, `Class workspace for ${name}.`]
+      `insert into assignments (professor_id, title, prompt, kind, join_code)
+       values ($1, $2, $3, 'class', $4)
+       returning id, title, prompt, class_id, join_code, due_at, created_at`,
+      [professorId, name, `Class workspace for ${name}.`, joinCode]
     );
     const classroom = classResult.rows[0];
     await client.query(
@@ -498,6 +532,7 @@ export async function createProfessorClassPostgres(
         class: {
           id: classroom.id,
           name: classroom.title,
+          joinCode: classroom.join_code || joinCode,
           studentCount: 0,
           createdAt: timeToMs(classroom.created_at)
         }
@@ -529,6 +564,15 @@ export async function listAssignmentRosterPostgres(
      order by app_users.display_name, app_users.email`,
     [assignmentId]
   );
+  const invitationResult = await client.query<ClassInvitationRow>(
+    `select id, email, created_at, expires_at, accepted_at
+     from class_invitations
+     where assignment_id = $1
+       and accepted_at is null
+       and expires_at > now()
+     order by created_at desc`,
+    [assignmentId]
+  );
 
   return {
     ok: true,
@@ -538,9 +582,299 @@ export async function listAssignmentRosterPostgres(
         studentName: row.student_name,
         studentEmail: row.student_email,
         enrolledAt: timeToMs(row.enrolled_at)
+      })),
+      pendingInvitations: invitationResult.rows.map((row) => ({
+        invitationId: row.id,
+        email: row.email,
+        createdAt: timeToMs(row.created_at),
+        expiresAt: timeToMs(row.expires_at)
       }))
     }
   };
+}
+
+export async function inviteClassStudentsPostgres(
+  client: QueryClient,
+  classId: string,
+  professorId: string,
+  body: InviteClassStudentsBody
+): Promise<MutationResult<InviteClassStudentsResponse>> {
+  const emails = [...new Set(body.emails.map((email) => normalizeEmail(email)).filter(Boolean))];
+  if (!emails.length) return { ok: false, status: 400, error: "At least one valid email is required." };
+
+  await client.query("begin");
+  try {
+    const access = await requireProfessorClassAccess(client, classId, professorId);
+    if (!access.ok) {
+      await client.query("rollback");
+      return access;
+    }
+
+    const classResult = await client.query<{ title: string; join_code: string | null }>(
+      `select title, join_code
+       from assignments
+       where id = $1
+       for update`,
+      [classId]
+    );
+    const classroom = classResult.rows[0];
+    if (!classroom) {
+      await client.query("rollback");
+      return { ok: false, status: 404, error: "Class not found." };
+    }
+
+    const joinCode = classroom.join_code || await assignClassJoinCodePostgres(client, classId);
+    const enrolledResult = await client.query<{ email: string }>(
+      `select app_users.email
+       from assignment_students
+       join app_users on app_users.id = assignment_students.student_id
+       where assignment_students.assignment_id = $1
+         and app_users.email = any($2::text[])`,
+      [classId, emails]
+    );
+    const enrolledEmails = new Set(enrolledResult.rows.map((row) => row.email));
+    const inviteTargets = emails.filter((email) => !enrolledEmails.has(email));
+    if (!inviteTargets.length) {
+      await client.query("rollback");
+      return { ok: false, status: 409, error: "All listed students are already in this class." };
+    }
+
+    const invitations: InviteClassStudentsResponse["invitations"] = [];
+    for (const email of inviteTargets) {
+      await client.query(
+        `delete from class_invitations
+         where assignment_id = $1
+           and email = $2
+           and accepted_at is null`,
+        [classId, email]
+      );
+
+      const token = createInvitationToken();
+      const inserted = await client.query<ClassInvitationRow>(
+        `insert into class_invitations (assignment_id, invited_by, email, token_hash, expires_at)
+         values ($1, $2, $3, $4, now() + interval '7 days')
+         returning id, email, created_at, expires_at`,
+        [classId, professorId, email, hashInvitationToken(token)]
+      );
+      const invitation = inserted.rows[0];
+      const inviteUrl = `${getAppBaseUrl()}/invite/${token}`;
+      const sendResult = await sendTransactionalEmail({
+        to: email,
+        subject: `You're invited to join ${classroom.title} on DraftProof`,
+        text: `You've been invited to join ${classroom.title} on DraftProof. Accept here: ${inviteUrl}. You can also join directly with code ${joinCode}. This link expires in 7 days.`,
+        html: `<p>You've been invited to join <strong>${classroom.title}</strong> on DraftProof.</p><p><a href="${inviteUrl}">Accept your invitation</a></p><p>Or join directly with class code <strong>${joinCode}</strong>.</p><p>This invitation expires in 7 days.</p>`
+      });
+      if (!sendResult.ok) {
+        await client.query("rollback");
+        return { ok: false, status: sendResult.status, error: "Unable to send class invitation email." };
+      }
+
+      invitations.push({
+        invitationId: invitation.id,
+        email: invitation.email,
+        createdAt: timeToMs(invitation.created_at),
+        expiresAt: timeToMs(invitation.expires_at)
+      });
+    }
+
+    await client.query("commit");
+    return { ok: true, value: { invitations } };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function getClassInvitationByTokenPostgres(
+  client: QueryClient,
+  token: string
+): Promise<MutationResult<ClassInvitationLookupResponse>> {
+  const result = await client.query<ClassInvitationRow>(
+    `select
+       class_invitations.id,
+       class_invitations.assignment_id,
+       class_invitations.email,
+       class_invitations.created_at,
+       class_invitations.expires_at,
+       class_invitations.accepted_at,
+       assignments.title as class_name
+     from class_invitations
+     join assignments on assignments.id = class_invitations.assignment_id
+     where class_invitations.token_hash = $1`,
+    [hashInvitationToken(token)]
+  );
+  const invitation = result.rows[0];
+  if (!invitation) return { ok: false, status: 404, error: "Invitation not found." };
+  if (new Date(invitation.expires_at).getTime() <= Date.now()) {
+    return { ok: false, status: 410, error: "Invitation expired." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      invitation: {
+        invitationId: invitation.id,
+        classId: invitation.assignment_id as string,
+        className: invitation.class_name as string,
+        email: invitation.email,
+        expiresAt: timeToMs(invitation.expires_at),
+        acceptedAt: nullableTimeToMs(invitation.accepted_at)
+      }
+    }
+  };
+}
+
+export async function acceptClassInvitationPostgres(
+  client: QueryClient,
+  token: string,
+  userId: string
+): Promise<MutationResult<AcceptClassInvitationResponse>> {
+  await client.query("begin");
+  try {
+    const invitationResult = await client.query<ClassInvitationRow>(
+      `select
+         class_invitations.id,
+         class_invitations.assignment_id,
+         class_invitations.email,
+         class_invitations.expires_at,
+         class_invitations.accepted_at,
+         assignments.title as class_name,
+         assignments.join_code
+       from class_invitations
+       join assignments on assignments.id = class_invitations.assignment_id
+       where class_invitations.token_hash = $1
+       for update`,
+      [hashInvitationToken(token)]
+    );
+    const invitation = invitationResult.rows[0];
+    if (!invitation) {
+      await client.query("rollback");
+      return { ok: false, status: 404, error: "Invitation not found." };
+    }
+    if (invitation.accepted_at) {
+      await client.query("rollback");
+      return { ok: false, status: 409, error: "Invitation already accepted." };
+    }
+    if (new Date(invitation.expires_at).getTime() <= Date.now()) {
+      await client.query("rollback");
+      return { ok: false, status: 410, error: "Invitation expired." };
+    }
+
+    const userResult = await client.query<{ id: string; email: string; display_name: string; role: string }>(
+      `select id, email, display_name, role
+       from app_users
+       where id = $1
+       for update`,
+      [userId]
+    );
+    const user = userResult.rows[0];
+    if (!user || user.role !== "student") {
+      await client.query("rollback");
+      return { ok: false, status: 403, error: "Only students can accept class invitations." };
+    }
+    if (user.email !== invitation.email) {
+      await client.query("rollback");
+      return { ok: false, status: 403, error: "This invitation is for a different email address." };
+    }
+
+    const joinCode = invitation.join_code || await assignClassJoinCodePostgres(client, invitation.assignment_id as string);
+    const enrolledCount = await enrollStudentInClassHierarchyPostgres(client, invitation.assignment_id as string, user.id);
+    await client.query(
+      `update class_invitations
+       set accepted_at = now()
+       where id = $1`,
+      [invitation.id]
+    );
+    await client.query("commit");
+
+    return {
+      ok: true,
+      value: {
+        class: {
+          id: invitation.assignment_id as string,
+          name: invitation.class_name as string,
+          joinCode,
+          studentCount: 0,
+          createdAt: Date.now()
+        },
+        assignmentsAdded: Math.max(enrolledCount - 1, 0)
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function joinClassByCodePostgres(
+  client: QueryClient,
+  studentId: string,
+  codeInput: string
+): Promise<MutationResult<JoinClassByCodeResponse>> {
+  const code = normalizeClassJoinCode(codeInput);
+  if (!code) return { ok: false, status: 400, error: "Class code is required." };
+
+  await client.query("begin");
+  try {
+    const classResult = await client.query<ProfessorClassRow>(
+      `select assignments.id, assignments.title as name, assignments.join_code, assignments.created_at
+       from assignments
+       where assignments.kind = 'class'
+         and assignments.join_code = $1
+       for update`,
+      [code]
+    );
+    const classroom = classResult.rows[0];
+    if (!classroom) {
+      await client.query("rollback");
+      return { ok: false, status: 404, error: "Class code not found." };
+    }
+
+    const enrolledCount = await enrollStudentInClassHierarchyPostgres(client, classroom.id, studentId);
+    await client.query("commit");
+    return {
+      ok: true,
+      value: {
+        class: {
+          id: classroom.id,
+          name: classroom.name,
+          joinCode: classroom.join_code || code,
+          studentCount: 0,
+          createdAt: timeToMs(classroom.created_at)
+        },
+        assignmentsAdded: Math.max(enrolledCount - 1, 0)
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+export async function removeClassStudentPostgres(
+  client: QueryClient,
+  classId: string,
+  professorId: string,
+  body: RemoveAssignmentStudentBody
+): Promise<MutationResult<{ studentId: string }>> {
+  if (!body.studentId) return { ok: false, status: 400, error: "Student id is required." };
+  const access = await requireProfessorClassAccess(client, classId, professorId);
+  if (!access.ok) return access;
+
+  const result = await client.query<{ student_id: string }>(
+    `delete from assignment_students
+     where student_id = $2
+       and assignment_id in (
+         select id
+         from assignments
+         where id = $1 or class_id = $1
+       )
+     returning student_id`,
+    [classId, body.studentId]
+  );
+  const removed = result.rows[0];
+  if (!removed) return { ok: false, status: 404, error: "Student enrollment not found." };
+  return { ok: true, value: { studentId: removed.student_id } };
 }
 
 export async function enrollAssignmentStudentPostgres(
@@ -1237,7 +1571,7 @@ export async function saveProfessorGradePostgres(
       sessionId,
       professorId,
       body.gradePercent,
-      JSON.stringify(body.rubricScores),
+      JSON.stringify({}),
       JSON.stringify(body.comments)
     ]
   );
@@ -1284,6 +1618,56 @@ async function withTransaction<T>(
 
 function isConnectableQueryClient(client: QueryClient): client is ConnectableQueryClient {
   return typeof (client as { connect?: unknown }).connect === "function";
+}
+
+function normalizeClassJoinCode(code: string) {
+  return code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function createClassJoinCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  const bytes = randomBytes(8);
+  for (let index = 0; index < 8; index += 1) {
+    code += alphabet[bytes[index] % alphabet.length];
+  }
+  return code;
+}
+
+function createInvitationToken() {
+  return randomBytes(24).toString("base64url");
+}
+
+function hashInvitationToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+async function assignClassJoinCodePostgres(client: QueryClient, classId: string) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const joinCode = createClassJoinCode();
+    const result = await client.query<{ join_code: string }>(
+      `update assignments
+       set join_code = $2
+       where id = $1
+         and (join_code is null or join_code = $2)
+       returning join_code`,
+      [classId, joinCode]
+    );
+    if (result.rows[0]?.join_code) return result.rows[0].join_code;
+  }
+  throw new Error("Unable to generate a unique class join code.");
+}
+
+async function enrollStudentInClassHierarchyPostgres(client: QueryClient, classId: string, studentId: string) {
+  const result = await client.query(
+    `insert into assignment_students (assignment_id, student_id)
+     select id, $2
+     from assignments
+     where id = $1 or class_id = $1
+     on conflict (assignment_id, student_id) do nothing`,
+    [classId, studentId]
+  );
+  return result.rowCount ?? 0;
 }
 
 async function requireProfessorAssignmentAccess(

@@ -118,7 +118,7 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
     }
   }
 
-  const title = mode === "login" ? "Log in to AuthorCheck" : "Create an AuthorCheck workspace";
+  const title = mode === "login" ? "Log in to DraftProof" : "Create a DraftProof workspace";
   const subtitle = mode === "login"
     ? "Use your existing student or professor credentials."
     : "Create a professor workspace or join a class with a student invite.";
@@ -126,7 +126,7 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
   return (
     <main className="auth-page">
       <header className="marketing-header">
-        <Link className="brand-mark" href="/">AuthorCheck</Link>
+        <Link className="brand-mark" href="/">DraftProof</Link>
         <nav className="product-nav" aria-label="Auth navigation">
           <Link href="/student">Student</Link>
           <Link href="/professor">Professor</Link>
@@ -266,7 +266,7 @@ export default function AuthPageClient({ mode }: { mode: AuthMode }) {
           ) : null}
           {error ? <p className="sync-error">{error}</p> : null}
           {notice ? <p className="note">{notice}</p> : null}
-          <p className="note">Passwords must be at least 12 characters and include letters and numbers.</p>
+          <p className="note">Passwords must be at least 8 characters and include 1 uppercase letter, 1 lowercase letter, and 1 number.</p>
         </form>
       </section>
     </main>

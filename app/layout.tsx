@@ -4,7 +4,7 @@ import ThemeRegistry from "@/components/theme-registry";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AuthorCheck",
+  title: "DraftProof",
   description: "Writing process evidence for students and professors"
 };
 

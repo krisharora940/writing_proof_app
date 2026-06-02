@@ -96,6 +96,16 @@ create table if not exists signup_email_verifications (
   check (length(code_hash) = 64)
 );
 
+create table if not exists password_reset_tokens (
+  user_id uuid primary key references app_users(id) on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null,
+  used_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (length(token_hash) = 64)
+);
+
 create table if not exists assignments (
   id uuid primary key default gen_random_uuid(),
   professor_id uuid not null references app_users(id),
@@ -103,6 +113,7 @@ create table if not exists assignments (
   prompt text not null,
   kind text not null default 'assignment',
   class_id uuid references assignments(id) on delete set null,
+  join_code text,
   due_at timestamptz,
   created_at timestamptz not null default now(),
   check (kind in ('class', 'assignment')),
@@ -111,7 +122,8 @@ create table if not exists assignments (
 
 alter table assignments
 add column if not exists kind text not null default 'assignment',
-add column if not exists class_id uuid references assignments(id) on delete set null;
+add column if not exists class_id uuid references assignments(id) on delete set null,
+add column if not exists join_code text;
 
 alter table assignments
 drop constraint if exists assignments_kind_check;
@@ -124,6 +136,10 @@ drop constraint if exists assignments_class_id_check;
 
 alter table assignments
 add constraint assignments_class_id_check check (kind = 'assignment' or class_id is null);
+
+create unique index if not exists assignments_join_code_unique
+on assignments(join_code)
+where join_code is not null;
 
 create table if not exists assignment_instructors (
   assignment_id uuid not null references assignments(id) on delete cascade,
@@ -145,6 +161,24 @@ create table if not exists assignment_students (
   created_at timestamptz not null default now(),
   primary key (assignment_id, student_id)
 );
+
+create table if not exists class_invitations (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references assignments(id) on delete cascade,
+  invited_by uuid not null references app_users(id) on delete cascade,
+  email text not null,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  accepted_at timestamptz,
+  check (length(token_hash) = 64)
+);
+
+create index if not exists class_invitations_assignment_created_idx
+on class_invitations(assignment_id, created_at desc);
+
+create index if not exists class_invitations_email_idx
+on class_invitations(email);
 
 create table if not exists writing_sessions (
   id uuid primary key default gen_random_uuid(),

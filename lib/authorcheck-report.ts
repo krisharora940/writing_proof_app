@@ -114,9 +114,9 @@ function flagFor(percent: number, behavioralRisk: BehavioralRiskSummary): Author
 }
 
 function flagDetail(flag: AuthorCheckFlag, percent: number) {
-  if (flag === "red") return `High review priority based on ${percent}% AuthorCheck similarity indicators.`;
-  if (flag === "yellow") return `Moderate concern based on ${percent}% AuthorCheck similarity indicators.`;
-  return `Likely originality based on ${percent}% AuthorCheck similarity indicators.`;
+  if (flag === "red") return `High review priority based on ${percent}% DraftProof similarity indicators.`;
+  if (flag === "yellow") return `Moderate concern based on ${percent}% DraftProof similarity indicators.`;
+  return `Likely originality based on ${percent}% DraftProof similarity indicators.`;
 }
 
 function clampPercent(value: number) {

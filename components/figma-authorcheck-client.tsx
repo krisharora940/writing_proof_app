@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Autocomplete,
   Alert,
   AppBar,
   Avatar,
@@ -80,16 +81,25 @@ import {
 import { addDays, format, isSameDay } from "date-fns";
 import { countWords, getDiff, type Snapshot, type WritingEvent } from "@/lib/writing-events";
 import type {
+  AcceptClassInvitationResponse,
   AppendWritingEventBody,
   AssignmentRosterResponse,
   AssignmentSubmissionListResponse,
+  ClassInvitationLookupResponse,
   CreateProfessorAssignmentResponse,
   CreateProfessorClassResponse,
   EnrollAssignmentStudentBody,
+  InviteClassStudentsBody,
+  InviteClassStudentsResponse,
+  JoinClassByCodeBody,
+  JoinClassByCodeResponse,
   LockSubmissionBody,
+  PasswordResetConfirmBody,
+  PasswordResetRequestBody,
   ProfessorAssignmentListResponse,
   ProfessorClassListResponse,
   ProfessorReportResponse,
+  RemoveAssignmentStudentBody,
   SaveProfessorGradeBody,
   SaveProfessorGradeResponse,
   StudentAssignmentListResponse,
@@ -98,9 +108,15 @@ import type {
 } from "@/lib/server-boundaries";
 import type { AuthUser, UserRole } from "@/lib/persistence";
 
-type PageKind = "landing" | "login" | "student" | "assignment" | "quiz" | "instructor" | "class" | "review" | "templates";
+type PageKind = "landing" | "login" | "signup" | "forgot-password" | "reset-password" | "student" | "assignment" | "quiz" | "instructor" | "class" | "review" | "templates" | "invite";
 type AccessState = "loading" | "authenticated" | "unauthenticated" | "forbidden" | "error";
 type StudentAssignment = StudentAssignmentListResponse["assignments"][number];
+type StudentClass = {
+  id: string;
+  name: string;
+  assignmentCount: number;
+  submittedCount: number;
+};
 type ProfessorAssignment = ProfessorAssignmentListResponse["assignments"][number];
 type ProfessorClass = ProfessorClassListResponse["classes"][number];
 type ProfessorSubmission = AssignmentSubmissionListResponse["submissions"][number];
@@ -111,14 +127,20 @@ type AuthorCheckAppProps = {
   role?: UserRole;
   assignmentId?: string;
   sessionId?: string;
+  invitationToken?: string;
+  resetToken?: string;
 };
 
 const studentBlue = "#1976d2";
 const instructorGreen = "#2e7d32";
 
-export function AuthorCheckApp({ page, role, assignmentId, sessionId }: AuthorCheckAppProps) {
+export function AuthorCheckApp({ page, role, assignmentId, sessionId, invitationToken, resetToken }: AuthorCheckAppProps) {
   if (page === "landing") return <LandingPage />;
   if (page === "login") return <LoginPage role={role ?? "student"} />;
+  if (page === "signup") return <SignupPage />;
+  if (page === "forgot-password") return <ForgotPasswordPage />;
+  if (page === "reset-password") return <ResetPasswordPage token={resetToken} />;
+  if (page === "invite") return <InvitationPage token={invitationToken} />;
 
   return (
     <RequireRole role={role ?? (page === "student" || page === "assignment" || page === "quiz" ? "student" : "professor")}>
@@ -142,7 +164,7 @@ function LandingPage() {
     <Container maxWidth="md" sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <Box sx={{ textAlign: "center", width: "100%" }}>
         <Typography variant="h2" sx={{ mb: 2, fontWeight: 700, color: studentBlue }}>
-          AuthorCheck
+          DraftProof
         </Typography>
         <Typography variant="h5" sx={{ mb: 6, color: "#666" }}>
           Educational writing review with process evidence and comprehension checks
@@ -160,7 +182,7 @@ function LandingPage() {
           <PortalCard
             icon={<School sx={{ fontSize: 80, color: instructorGreen, mb: 2 }} />}
             title="Instructor Portal"
-            detail="Manage classes, review submissions, and open AuthorCheck reports"
+            detail="Manage classes, review submissions, and open DraftProof reports"
             button="Login as Instructor"
             color="success"
             onClick={() => router.push("/login/instructor")}
@@ -195,12 +217,14 @@ function PortalCard(props: {
 
 function LoginPage({ role }: { role: UserRole }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const isStudent = role === "student";
+  const redirect = searchParams.get("redirect");
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -222,7 +246,7 @@ function LoginPage({ role }: { role: UserRole }) {
         await fetch("/api/auth/logout", { method: "POST" });
         throw new Error(`This is the ${formatRole(role).toLowerCase()} portal. Use a ${formatRole(role).toLowerCase()} account to continue.`);
       }
-      router.push(isStudent ? "/student" : "/professor");
+      router.push(redirect || (isStudent ? "/student" : "/professor"));
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Sign in failed.");
     } finally {
@@ -251,7 +275,7 @@ function LoginPage({ role }: { role: UserRole }) {
           <form onSubmit={handleLogin}>
             <TextField
               fullWidth
-              label={isStudent ? "Student Email or Demo Username" : "Faculty Email or Demo Username"}
+              label={isStudent ? "Student Email" : "Faculty Email"}
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder={isStudent ? "student@university.edu" : "professor@university.edu"}
@@ -282,21 +306,16 @@ function LoginPage({ role }: { role: UserRole }) {
                 <input type="checkbox" id="remember" />
                 <label htmlFor="remember" style={{ marginLeft: 8, fontSize: "0.875rem" }}>Remember me</label>
               </Box>
-              <Typography variant="body2" color="text.secondary">AuthorCheck secure session</Typography>
+              <Button
+                variant="text"
+                onClick={() => router.push("/forgot-password")}
+                sx={{ minWidth: 0, p: 0, textTransform: "none", fontWeight: 600 }}
+              >
+                Forgot password?
+              </Button>
             </Box>
             <Button type="submit" variant="contained" color={isStudent ? "primary" : "success"} fullWidth size="large" disabled={loading || !email || !password} sx={{ py: 1.5, fontWeight: 600, mb: 2 }}>
               {loading ? "Signing in..." : "Sign In"}
-            </Button>
-            <Button
-              variant="outlined"
-              color={isStudent ? "primary" : "success"}
-              fullWidth
-              size="large"
-              onClick={() => submitLogin({ username: isStudent ? "student" : "professor", password: isStudent ? "student-demo" : "professor-demo" })}
-              disabled={loading}
-              sx={{ py: 1.5, mb: 2 }}
-            >
-              Demo Login
             </Button>
           </form>
 
@@ -310,7 +329,11 @@ function LoginPage({ role }: { role: UserRole }) {
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               Need a new account?{" "}
-              <Button variant="text" onClick={() => router.push("/signup")} sx={{ textTransform: "none", fontWeight: 600 }}>
+              <Button
+                variant="text"
+                onClick={() => router.push(`/signup?role=${role}${redirect ? `&redirect=${encodeURIComponent(redirect)}` : ""}`)}
+                sx={{ textTransform: "none", fontWeight: 600 }}
+              >
                 Sign up
               </Button>
             </Typography>
@@ -318,6 +341,457 @@ function LoginPage({ role }: { role: UserRole }) {
               Back to Home
             </Button>
           </Box>
+        </Paper>
+      </Container>
+    </Box>
+  );
+}
+
+function SignupPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirect = searchParams.get("redirect");
+  const requestedRole = searchParams.get("role");
+  const [role, setRole] = useState<UserRole>(requestedRole === "professor" ? "professor" : "student");
+  const [form, setForm] = useState({
+    displayName: "",
+    email: searchParams.get("email") || "",
+    password: "",
+    inviteCode: ""
+  });
+  const [verificationCode, setVerificationCode] = useState("");
+  const [step, setStep] = useState<"details" | "verify">("details");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const isStudent = role === "student";
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(step === "details" ? "/api/auth/signup" : "/api/auth/signup/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(step === "details" ? {
+          displayName: form.displayName,
+          email: form.email,
+          password: form.password,
+          role,
+          inviteCode: form.inviteCode || undefined
+        } : {
+          email: form.email,
+          code: verificationCode
+        })
+      });
+      const data = await response.json().catch(() => null) as {
+        user?: AuthUser;
+        error?: string;
+        delivery?: "email" | "development";
+        expiresInMinutes?: number;
+        code?: string;
+      } | null;
+      if (!response.ok) throw new Error(data?.error || "Sign up failed.");
+
+      if (step === "details") {
+        setStep("verify");
+        setNotice(
+          data?.delivery === "development" && data.code
+            ? `Development code: ${data.code}`
+            : `A verification code was sent to ${form.email}. It expires in ${data?.expiresInMinutes || 10} minutes.`
+        );
+        return;
+      }
+
+      if (!data?.user) throw new Error("Sign up failed.");
+      router.push(redirect || (data.user.role === "student" ? "/student" : "/professor"));
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Sign up failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resendCode() {
+    setLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth/signup/resend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: form.email })
+      });
+      const data = await response.json().catch(() => null) as {
+        error?: string;
+        delivery?: "email" | "development";
+        expiresInMinutes?: number;
+        code?: string;
+      } | null;
+      if (!response.ok) throw new Error(data?.error || "Unable to resend verification code.");
+      setNotice(
+        data?.delivery === "development" && data.code
+          ? `Development code: ${data.code}`
+          : `A new verification code was sent to ${form.email}. It expires in ${data?.expiresInMinutes || 10} minutes.`
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to resend verification code.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", background: isStudent ? "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" : "linear-gradient(135deg, #11998e 0%, #38ef7d 100%)" }}>
+      <Container maxWidth="sm">
+        <Paper elevation={10} sx={{ p: 4, borderRadius: 3 }}>
+          <Box sx={{ textAlign: "center", mb: 4 }}>
+            <Box sx={{ width: 80, height: 80, borderRadius: "50%", bgcolor: isStudent ? studentBlue : instructorGreen, display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 2 }}>
+              {isStudent ? <Person sx={{ fontSize: 50, color: "white" }} /> : <School sx={{ fontSize: 50, color: "white" }} />}
+            </Box>
+            <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+              {step === "verify" ? "Verify Your Email" : isStudent ? "Student Sign Up" : "Instructor Sign Up"}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {step === "verify"
+                ? "Enter the 6-digit code sent from DraftProof <no-reply@draftproof.org>."
+                : isStudent
+                  ? "Create your DraftProof account to access assignments and writing sessions."
+                  : "Create your DraftProof account to manage classes, reports, and review workflows."}
+            </Typography>
+          </Box>
+
+          {error && <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError("")}>{error}</Alert>}
+          {notice && <Alert severity="info" sx={{ mb: 3 }} onClose={() => setNotice("")}>{notice}</Alert>}
+
+          <form onSubmit={submit}>
+            <FormControl sx={{ width: "100%", mb: 3 }}>
+              <FormLabel sx={{ mb: 1 }}>Account Type</FormLabel>
+              <RadioGroup row value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
+                <FormControlLabel value="student" control={<Radio />} label="Student" disabled={step === "verify"} />
+                <FormControlLabel value="professor" control={<Radio />} label="Instructor" disabled={step === "verify"} />
+              </RadioGroup>
+            </FormControl>
+
+            {step === "details" ? (
+              <>
+                <TextField
+                  fullWidth
+                  label={isStudent ? "Student Name" : "Instructor Name"}
+                  value={form.displayName}
+                  onChange={(event) => setForm({ ...form, displayName: event.target.value })}
+                  sx={{ mb: 3 }}
+                  slotProps={{ input: { startAdornment: <InputAdornment position="start"><Person color="action" /></InputAdornment> } }}
+                />
+                <TextField
+                  fullWidth
+                  type="email"
+                  label="Email"
+                  value={form.email}
+                  onChange={(event) => setForm({ ...form, email: event.target.value })}
+                  placeholder={isStudent ? "student@university.edu" : "professor@university.edu"}
+                  sx={{ mb: 3 }}
+                  slotProps={{ input: { startAdornment: <InputAdornment position="start"><Email color="action" /></InputAdornment> } }}
+                />
+                {isStudent && (
+                  <TextField
+                    fullWidth
+                    label="Invite Code"
+                    value={form.inviteCode}
+                    onChange={(event) => setForm({ ...form, inviteCode: event.target.value })}
+                    placeholder="Optional unless your school uses invite-only access"
+                    sx={{ mb: 3 }}
+                  />
+                )}
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type={showPassword ? "text" : "password"}
+                  value={form.password}
+                  onChange={(event) => setForm({ ...form, password: event.target.value })}
+                  helperText="At least 8 characters with 1 uppercase letter, 1 lowercase letter, and 1 number."
+                  sx={{ mb: 2 }}
+                  slotProps={{
+                    input: {
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
+                            {showPassword ? <VisibilityOff /> : <Visibility />}
+                          </IconButton>
+                        </InputAdornment>
+                      )
+                    }
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <TextField
+                  fullWidth
+                  type="email"
+                  label="Email"
+                  value={form.email}
+                  onChange={(event) => setForm({ ...form, email: event.target.value })}
+                  sx={{ mb: 3 }}
+                  slotProps={{ input: { startAdornment: <InputAdornment position="start"><Email color="action" /></InputAdornment> } }}
+                />
+                <TextField
+                  fullWidth
+                  label="Verification Code"
+                  value={verificationCode}
+                  onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="6-digit code"
+                  inputMode="numeric"
+                  sx={{ mb: 3 }}
+                />
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type="password"
+                  value={form.password}
+                  disabled
+                  sx={{ mb: 2 }}
+                />
+              </>
+            )}
+
+            <Button
+              type="submit"
+              variant="contained"
+              color={isStudent ? "primary" : "success"}
+              fullWidth
+              size="large"
+              disabled={loading || (step === "details"
+                ? !form.displayName.trim() || !form.email.trim() || !form.password.trim()
+                : verificationCode.length !== 6)}
+              sx={{ py: 1.5, fontWeight: 600, mb: 2 }}
+            >
+              {loading ? "Working..." : step === "verify" ? "Verify Email" : "Send Verification Code"}
+            </Button>
+
+            {step === "verify" && (
+              <Button variant="outlined" color={isStudent ? "primary" : "success"} fullWidth size="large" onClick={() => void resendCode()} disabled={loading} sx={{ py: 1.5, mb: 2 }}>
+                Resend Code
+              </Button>
+            )}
+          </form>
+
+          <Divider sx={{ my: 3 }}><Typography variant="body2" color="text.secondary">OR</Typography></Divider>
+          <Box sx={{ textAlign: "center" }}>
+            {step === "verify" ? (
+              <Button
+                variant="text"
+                onClick={() => {
+                  setStep("details");
+                  setVerificationCode("");
+                  setError("");
+                  setNotice("");
+                }}
+                sx={{ textTransform: "none", fontWeight: 600 }}
+              >
+                Edit account details
+              </Button>
+            ) : null}
+            <Typography variant="body2" color="text.secondary" sx={{ mt: step === "verify" ? 2 : 0 }}>
+              Already have an account?{" "}
+              <Button variant="text" onClick={() => router.push(`/login/${isStudent ? "student" : "instructor"}`)} sx={{ textTransform: "none", fontWeight: 600 }}>
+                Sign in
+              </Button>
+            </Typography>
+            <Button variant="text" onClick={() => router.push("/")} sx={{ mt: 2, textTransform: "none", color: "text.secondary" }}>
+              Back to Home
+            </Button>
+          </Box>
+        </Paper>
+      </Container>
+    </Box>
+  );
+}
+
+function ForgotPasswordPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth/password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email } satisfies PasswordResetRequestBody)
+      });
+      const data = await response.json().catch(() => null) as {
+        error?: string;
+        delivery?: "email" | "development";
+        expiresInMinutes?: number;
+        token?: string;
+      } | null;
+      if (!response.ok) throw new Error(data?.error || "Unable to request password reset.");
+      setNotice(
+        data?.delivery === "development" && data.token
+          ? `Development reset token: ${data.token}`
+          : "If that email has an account, a reset link has been sent."
+      );
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to request password reset.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" }}>
+      <Container maxWidth="sm">
+        <Paper elevation={10} sx={{ p: 4, borderRadius: 3 }}>
+          <Box sx={{ textAlign: "center", mb: 4 }}>
+            <Box sx={{ width: 80, height: 80, borderRadius: "50%", bgcolor: studentBlue, display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 2 }}>
+              <Email sx={{ fontSize: 44, color: "white" }} />
+            </Box>
+            <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>Reset Password</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Enter your account email and we&apos;ll send you a reset link.
+            </Typography>
+          </Box>
+          {error && <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError("")}>{error}</Alert>}
+          {notice && <Alert severity="info" sx={{ mb: 3 }} onClose={() => setNotice("")}>{notice}</Alert>}
+          <form onSubmit={submit}>
+            <TextField
+              fullWidth
+              type="email"
+              label="Account Email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@school.edu"
+              sx={{ mb: 3 }}
+              slotProps={{ input: { startAdornment: <InputAdornment position="start"><Email color="action" /></InputAdornment> } }}
+            />
+            <Button type="submit" variant="contained" fullWidth size="large" disabled={loading || !email.trim()} sx={{ py: 1.5, fontWeight: 600, mb: 2 }}>
+              {loading ? "Sending..." : "Send Reset Link"}
+            </Button>
+          </form>
+          <Box sx={{ textAlign: "center" }}>
+            <Button variant="text" onClick={() => router.push("/login/student")} sx={{ textTransform: "none", fontWeight: 600 }}>
+              Back to Sign In
+            </Button>
+          </Box>
+        </Paper>
+      </Container>
+    </Box>
+  );
+}
+
+function ResetPasswordPage({ token }: { token?: string }) {
+  const router = useRouter();
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!token) {
+      setError("Password reset link is invalid.");
+      setLoading(false);
+      return;
+    }
+    fetch(`/api/auth/password-reset/${token}`)
+      .then(async (response) => {
+        const data = await response.json().catch(() => null) as { error?: string } | null;
+        if (!response.ok) throw new Error(data?.error || "Password reset link is invalid.");
+        setNotice("Choose a new password for your account.");
+      })
+      .catch((nextError) => setError(readError(nextError)))
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`/api/auth/password-reset/${token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password } satisfies PasswordResetConfirmBody)
+      });
+      const data = await response.json().catch(() => null) as { user?: AuthUser; error?: string } | null;
+      if (!response.ok || !data?.user) throw new Error(data?.error || "Unable to reset password.");
+      router.push(data.user.role === "student" ? "/student" : "/professor");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to reset password.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" }}>
+      <Container maxWidth="sm">
+        <Paper elevation={10} sx={{ p: 4, borderRadius: 3 }}>
+          <Box sx={{ textAlign: "center", mb: 4 }}>
+            <Box sx={{ width: 80, height: 80, borderRadius: "50%", bgcolor: studentBlue, display: "flex", alignItems: "center", justifyContent: "center", mx: "auto", mb: 2 }}>
+              <Visibility sx={{ fontSize: 44, color: "white" }} />
+            </Box>
+            <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>Choose New Password</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Use at least 8 characters with 1 uppercase letter, 1 lowercase letter, and 1 number.
+            </Typography>
+          </Box>
+          {loading && <LinearProgress sx={{ mb: 3 }} />}
+          {error && <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError("")}>{error}</Alert>}
+          {!error && notice && <Alert severity="info" sx={{ mb: 3 }}>{notice}</Alert>}
+          {!loading && !error && (
+            <form onSubmit={submit}>
+              <TextField
+                fullWidth
+                label="New Password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                sx={{ mb: 3 }}
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    )
+                  }
+                }}
+              />
+              <TextField
+                fullWidth
+                label="Confirm Password"
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                sx={{ mb: 3 }}
+              />
+              <Button type="submit" variant="contained" fullWidth size="large" disabled={saving || !password || !confirmPassword} sx={{ py: 1.5, fontWeight: 600 }}>
+                {saving ? "Updating..." : "Update Password"}
+              </Button>
+            </form>
+          )}
         </Paper>
       </Container>
     </Box>
@@ -358,7 +832,7 @@ function RequireRole({ role, children }: { role: UserRole; children: (user: Auth
     return () => { alive = false; };
   }, [role]);
 
-  if (state === "loading") return <FullPageMessage title="Loading AuthorCheck" detail="Checking your secure session." />;
+  if (state === "loading") return <FullPageMessage title="Loading DraftProof" detail="Checking your secure session." />;
   if (state !== "authenticated" || !user) {
     return (
       <FullPageMessage
@@ -382,23 +856,64 @@ function StudentDashboard({ user }: { user: AuthUser }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [joinCode, setJoinCode] = useState("");
 
-  useEffect(() => {
-    loadJson<StudentAssignmentListResponse>("/api/assignments")
+  const loadAssignments = useCallback(() => {
+    setLoading(true);
+    return loadJson<StudentAssignmentListResponse>("/api/assignments")
       .then((data) => setAssignments(data.assignments))
-      .catch((nextError) => setError(readError(nextError)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadAssignments()
+      .catch((nextError) => setError(readError(nextError)));
+  }, [loadAssignments]);
+
+  async function joinClass() {
+    setError("");
+    setNotice("");
+    try {
+      const joined = await postJson<JoinClassByCodeResponse>("/api/student/classes/join", { code: joinCode } satisfies JoinClassByCodeBody);
+      setJoinCode("");
+      setNotice(`Joined ${joined.class.name}. ${joined.assignmentsAdded ? `${joined.assignmentsAdded} assignment${joined.assignmentsAdded === 1 ? "" : "s"} added.` : "Assignments will appear when your instructor publishes them."}`);
+      await loadAssignments();
+    } catch (nextError) {
+      setError(readError(nextError));
+    }
+  }
 
   const nextSevenDays = useMemo(() => Array.from({ length: 7 }, (_, index) => addDays(new Date(), index)), []);
   const datedAssignments = assignments.filter((assignment) => assignment.dueAt);
   const assignmentsForDate = (date: Date) => datedAssignments.filter((assignment) => isSameDay(new Date(assignment.dueAt || 0), date));
   const upcoming = [...assignments].sort((a, b) => (a.dueAt || Number.MAX_SAFE_INTEGER) - (b.dueAt || Number.MAX_SAFE_INTEGER)).slice(0, 4);
+  const classes = useMemo<StudentClass[]>(() => {
+    const grouped = new Map<string, StudentClass>();
+    assignments.forEach((assignment) => {
+      const classId = assignment.classId || assignment.id;
+      const className = assignment.className || assignment.title;
+      const existing = grouped.get(classId);
+      if (existing) {
+        existing.assignmentCount += 1;
+        if (assignment.submittedAt) existing.submittedCount += 1;
+        return;
+      }
+      grouped.set(classId, {
+        id: classId,
+        name: className,
+        assignmentCount: 1,
+        submittedCount: assignment.submittedAt ? 1 : 0
+      });
+    });
+    return [...grouped.values()];
+  }, [assignments]);
 
   return (
-    <DashboardShell color="primary" title="AuthorCheck - Student Dashboard" user={user}>
+    <DashboardShell color="primary" title="DraftProof - Student Dashboard" user={user}>
       <Container maxWidth="xl" sx={{ py: 4 }}>
         {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+        {notice && <Alert severity="success" sx={{ mb: 3 }} onClose={() => setNotice("")}>{notice}</Alert>}
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "2fr 1fr" }, gap: 3 }}>
           <Box>
             <Paper sx={{ p: 3, mb: 3 }}>
@@ -411,7 +926,7 @@ function StudentDashboard({ user }: { user: AuthUser }) {
                       <Card key={assignment.id} sx={{ cursor: "pointer", border: conflict ? "2px solid #f44336" : "none", "&:hover": { transform: "translateY(-2px)", boxShadow: 3 } }} onClick={() => router.push(`/student/assignment/${assignment.id}`)}>
                         <CardContent>
                           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
-                            <Chip label="AuthorCheck" size="small" color="primary" />
+                            <Chip label="DraftProof" size="small" color="primary" />
                             {conflict && <Warning color="error" />}
                           </Box>
                           <Typography variant="h6" sx={{ mb: 1 }}>{assignment.title}</Typography>
@@ -461,24 +976,38 @@ function StudentDashboard({ user }: { user: AuthUser }) {
           </Box>
 
           <Paper sx={{ p: 3, alignSelf: "start" }}>
+            <Typography variant="h5" sx={{ mb: 2 }}>Join a Class</Typography>
+            <TextField
+              fullWidth
+              label="Class Code"
+              value={joinCode}
+              onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+              placeholder="Enter your instructor's code"
+              sx={{ mb: 2 }}
+            />
+            <Button variant="contained" fullWidth sx={{ mb: 3 }} onClick={() => void joinClass()} disabled={!joinCode.trim()}>
+              Join by Code
+            </Button>
+            <Divider sx={{ mb: 3 }} />
             <Typography variant="h5" sx={{ mb: 3 }}>My Classes</Typography>
-            {assignments.map((assignment, index) => (
-              <Card key={assignment.id} sx={{ mb: 2, cursor: "pointer", "&:hover": { boxShadow: 3 } }} onClick={() => router.push(`/student/assignment/${assignment.id}`)}>
+            {classes.map((classroom, index) => (
+              <Card key={classroom.id} sx={{ mb: 2, "&:hover": { boxShadow: 3 } }}>
                 <CardContent>
                   <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                      <Avatar sx={{ bgcolor: classColor(index), width: 32, height: 32 }}>{assignment.title[0]}</Avatar>
+                      <Avatar sx={{ bgcolor: classColor(index), width: 32, height: 32 }}>{classroom.name[0]}</Avatar>
                       <Box>
-                        <Typography variant="subtitle1">{assignment.title}</Typography>
-                        <Typography variant="caption" color="text.secondary">AuthorCheck course</Typography>
+                        <Typography variant="subtitle1">{classroom.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">{classroom.assignmentCount} assignment{classroom.assignmentCount === 1 ? "" : "s"}</Typography>
                       </Box>
                     </Box>
                   </Box>
                   <Typography variant="caption" color="text.secondary">Progress</Typography>
-                  <LinearProgress variant="determinate" value={assignment.submittedAt ? 100 : assignment.sessionId ? 55 : 10} sx={{ height: 8, borderRadius: 4, mt: 1 }} />
+                  <LinearProgress variant="determinate" value={classroom.assignmentCount ? Math.round((classroom.submittedCount / classroom.assignmentCount) * 100) : 0} sx={{ height: 8, borderRadius: 4, mt: 1 }} />
                 </CardContent>
               </Card>
             ))}
+            {!classes.length && <Typography variant="body2" color="text.secondary">You haven&apos;t joined any classes yet.</Typography>}
           </Paper>
         </Box>
       </Container>
@@ -499,6 +1028,9 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
   const lastTextRef = useRef("");
   const lastInputAtRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingEventsRef = useRef<Array<Omit<WritingEvent, "id">>>([]);
+  const flushPromiseRef = useRef<Promise<void> | null>(null);
+  const saveCycleMs = 15_000;
 
   useEffect(() => {
     const query = assignmentId ? `?assignmentId=${encodeURIComponent(assignmentId)}` : "";
@@ -511,6 +1043,41 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
       })
       .catch((nextError) => setError(readError(nextError)));
   }, [assignmentId]);
+
+  const flushPendingEvents = useCallback(async () => {
+    if (!session || session.session.lockedAt || !pendingEventsRef.current.length) return;
+    if (flushPromiseRef.current) return flushPromiseRef.current;
+
+    const run = (async () => {
+      const events = pendingEventsRef.current.splice(0, pendingEventsRef.current.length);
+      if (!events.length) return;
+      setAutoSaveStatus("saving");
+      try {
+        for (const event of events) {
+          await postJson("/api/writing-events", { sessionId: session.session.id, event } satisfies AppendWritingEventBody);
+        }
+        setAutoSaveStatus(pendingEventsRef.current.length ? "unsaved" : "saved");
+      } catch {
+        pendingEventsRef.current.unshift(...events);
+        setAutoSaveStatus("unsaved");
+      }
+    })();
+
+    flushPromiseRef.current = run.finally(() => {
+      flushPromiseRef.current = null;
+    });
+    return flushPromiseRef.current;
+  }, [session]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void flushPendingEvents();
+    }, saveCycleMs);
+    return () => {
+      window.clearInterval(interval);
+      void flushPendingEvents();
+    };
+  }, [flushPendingEvents]);
 
   async function recordChange(nextContent: string, inputType: string) {
     if (!session || session.session.lockedAt) return;
@@ -536,13 +1103,8 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
     };
     lastInputAtRef.current = now;
     lastTextRef.current = nextContent;
-    setAutoSaveStatus("saving");
-    try {
-      await postJson("/api/writing-events", { sessionId: session.session.id, event } satisfies AppendWritingEventBody);
-      setAutoSaveStatus("saved");
-    } catch {
-      setAutoSaveStatus("unsaved");
-    }
+    pendingEventsRef.current.push(event);
+    setAutoSaveStatus("unsaved");
   }
 
   function handleInput(event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
@@ -570,6 +1132,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
     const snapshot: Snapshot = { at, text: content };
     setError("");
     try {
+      await flushPendingEvents();
       await postJson("/api/submissions/lock", { sessionId: session.session.id, submittedText: content, snapshot } satisfies LockSubmissionBody);
       setShowReviewDialog(false);
       setShowConfirmDialog(true);
@@ -579,7 +1142,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
     }
   }
 
-  if (!session && !error) return <FullPageMessage title="Loading Assignment" detail="Preparing the AuthorCheck editor." />;
+  if (!session && !error) return <FullPageMessage title="Loading Assignment" detail="Preparing the DraftProof editor." />;
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#f5f5f5" }}>
@@ -588,7 +1151,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
           <IconButton edge="start" color="inherit" onClick={() => router.push("/student")}><ArrowBack /></IconButton>
           <Box sx={{ flexGrow: 1, ml: 2 }}>
             <Typography variant="h6">{session?.assignment.title || "Assignment"}</Typography>
-            <Typography variant="caption">AuthorCheck writing workspace</Typography>
+            <Typography variant="caption">DraftProof writing workspace</Typography>
           </Box>
           <Chip icon={autoSaveStatus === "saved" ? <CheckCircle /> : <Save />} label={autoSaveStatus === "saved" ? "Saved" : autoSaveStatus === "saving" ? "Saving..." : "Unsaved"} color={autoSaveStatus === "saved" ? "success" : "default"} sx={{ mr: 2 }} />
           <Typography variant="body2">{countWords(content)} words | {content.length} characters</Typography>
@@ -743,7 +1306,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   const [reports, setReports] = useState<Record<string, ProfessorReportResponse>>({});
   const [createClassOpen, setCreateClassOpen] = useState(false);
   const [createClassLoading, setCreateClassLoading] = useState(false);
-  const [classForm, setClassForm] = useState({ name: "", studentName: "", studentEmail: "" });
+  const [classForm, setClassForm] = useState({ name: "" });
   const [error, setError] = useState("");
 
   const loadAssignments = useCallback(() => {
@@ -810,8 +1373,6 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   async function createClass(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const className = classForm.name.trim();
-    const studentName = classForm.studentName.trim();
-    const studentEmail = classForm.studentEmail.trim();
     if (!className) return;
 
     setCreateClassLoading(true);
@@ -820,13 +1381,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
       const created = await postJson<CreateProfessorClassResponse>("/api/professor/classes", {
         name: className
       });
-      if (studentName && studentEmail) {
-        await postJson(`/api/professor/classes/${created.class.id}/students`, {
-          displayName: studentName,
-          email: studentEmail
-        } satisfies EnrollAssignmentStudentBody);
-      }
-      setClassForm({ name: "", studentName: "", studentEmail: "" });
+      setClassForm({ name: "" });
       setCreateClassOpen(false);
       const nextClasses = await loadClasses();
       setSelectedClassId(created.class.id || nextClasses[0]?.id || "");
@@ -838,7 +1393,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   }
 
   return (
-    <DashboardShell color="success" title="AuthorCheck - Instructor Dashboard" user={user}>
+    <DashboardShell color="success" title="DraftProof - Instructor Dashboard" user={user}>
       <Container maxWidth="xl" sx={{ py: 4 }}>
         {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "2fr 1fr" }, gap: 3 }}>
@@ -878,7 +1433,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
               </Box>
               <TableContainer>
                 <Table>
-                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>AuthorCheck</TableCell><TableCell>Similarity</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
+                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>DraftProof</TableCell><TableCell>Similarity</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
                   <TableBody>
                     {visibleSubmissions.map((submission) => {
                       const report = submission.sessionId ? reports[submission.sessionId] : null;
@@ -912,13 +1467,16 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
                   <CardContent>
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
                       <Avatar sx={{ bgcolor: classColor(index), width: 32, height: 32 }}>{classroom.name[0]}</Avatar>
-                      <Box><Typography variant="subtitle1">{classroom.name}</Typography><Typography variant="caption" color="text.secondary">{classroom.studentCount} student{classroom.studentCount === 1 ? "" : "s"}</Typography></Box>
+                      <Box>
+                        <Typography variant="subtitle1">{classroom.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">{classroom.studentCount} student{classroom.studentCount === 1 ? "" : "s"} | Code {classroom.joinCode}</Typography>
+                      </Box>
                     </Box>
                     <Button size="small" startIcon={<PersonAdd />} onClick={(event) => { event.stopPropagation(); router.push(`/professor/class/${classroom.id}`); }}>Manage Class</Button>
                   </CardContent>
                 </Card>
               ))}
-              {!classes.length && <Typography variant="body2" color="text.secondary">Create a class to invite students.</Typography>}
+              {!classes.length && <Typography variant="body2" color="text.secondary">Create a class to generate a join code and invite students.</Typography>}
             </Paper>
             <Paper sx={{ p: 3 }}>
               <Typography variant="h5" sx={{ mb: 2 }}>Quick Actions</Typography>
@@ -939,21 +1497,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
               label="Class name"
               value={classForm.name}
               onChange={(event) => setClassForm({ ...classForm, name: event.target.value })}
-              sx={{ mt: 1, mb: 2 }}
-            />
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>Invite students</Typography>
-            <TextField
-              fullWidth
-              label="Student name"
-              value={classForm.studentName}
-              onChange={(event) => setClassForm({ ...classForm, studentName: event.target.value })}
-              sx={{ mb: 2 }}
-            />
-            <TextField
-              fullWidth
-              label="Student email"
-              value={classForm.studentEmail}
-              onChange={(event) => setClassForm({ ...classForm, studentEmail: event.target.value })}
+              sx={{ mt: 1 }}
             />
           </DialogContent>
           <DialogActions>
@@ -972,7 +1516,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [comments, setComments] = useState<Array<{ lineNumber: number; text: string }>>([]);
   const [newComment, setNewComment] = useState("");
-  const [rubricScores, setRubricScores] = useState({ argument: 0, evidence: 0, process: 0, presentation: 0 });
+  const [gradePercent, setGradePercent] = useState(0);
   const [savedGrade, setSavedGrade] = useState<number | null>(null);
   const [gradeSaving, setGradeSaving] = useState(false);
   const [error, setError] = useState("");
@@ -985,8 +1529,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
   }, [sessionId]);
 
   const lines = (report?.submittedText || "").split("\n");
-  const totalGrade = Math.round(Object.values(rubricScores).reduce((sum, score) => sum + score, 0) / 4);
-  const gradeChanged = savedGrade !== null && savedGrade !== totalGrade;
+  const gradeChanged = savedGrade !== null && savedGrade !== gradePercent;
 
   async function saveGrade() {
     if (!sessionId) return;
@@ -994,8 +1537,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
     setError("");
     try {
       const body: SaveProfessorGradeBody = {
-        gradePercent: totalGrade,
-        rubricScores,
+        gradePercent,
         comments
       };
       const saved = await postJson<SaveProfessorGradeResponse>(`/api/reports/${sessionId}/grade`, body);
@@ -1014,7 +1556,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
           <IconButton edge="start" color="inherit" onClick={() => router.push("/professor")}><ArrowBack /></IconButton>
           <Box sx={{ flexGrow: 1, ml: 2 }}>
             <Typography variant="h6">Submission Review</Typography>
-            <Typography variant="caption">AuthorCheck report and grading workspace</Typography>
+            <Typography variant="caption">DraftProof report and grading workspace</Typography>
           </Box>
           {report && <FlagChip flag={report.authorCheck.flag} label={report.authorCheck.flagLabel} />}
         </Toolbar>
@@ -1051,7 +1593,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
               </Paper>
 
               <Paper sx={{ p: 3, height: "70vh", overflow: "auto" }}>
-                <Typography variant="h6" sx={{ mb: 3 }}>AuthorCheck System Report</Typography>
+                <Typography variant="h6" sx={{ mb: 3 }}>DraftProof System Report</Typography>
                 <Card sx={{ mb: 3, bgcolor: report.authorCheck.flag === "red" ? "#ffebee" : report.authorCheck.flag === "yellow" ? "#fff3e0" : "#e8f5e9" }}>
                   <CardContent>
                     <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
@@ -1087,21 +1629,24 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
             </Box>
 
             <Paper sx={{ p: 3, mt: 2 }}>
-              <Typography variant="h6" sx={{ mb: 2 }}>Grading Rubric</Typography>
+              <Typography variant="h6" sx={{ mb: 2 }}>Final Grade</Typography>
               {savedGrade !== null && (
                 <Alert severity={gradeChanged ? "info" : "success"} sx={{ mb: 2 }}>
-                  {gradeChanged ? "Rubric scores changed. Save the grade again to update it." : `Grade saved at ${savedGrade}%.`}
+                  {gradeChanged ? "Grade changed. Save again to update it." : `Grade saved at ${savedGrade}%.`}
                 </Alert>
               )}
-              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "repeat(4, 1fr)" }, gap: 2 }}>
-                {Object.keys(rubricScores).map((key) => (
-                  <TextField key={key} label={key[0].toUpperCase() + key.slice(1)} type="number" value={rubricScores[key as keyof typeof rubricScores]} onChange={(event) => setRubricScores({ ...rubricScores, [key]: Math.max(0, Math.min(100, Number(event.target.value))) })} slotProps={{ htmlInput: { min: 0, max: 100 } }} />
-                ))}
-              </Box>
+              <TextField
+                label="Grade"
+                type="number"
+                value={gradePercent}
+                onChange={(event) => setGradePercent(Math.max(0, Math.min(100, Number(event.target.value))))}
+                slotProps={{ htmlInput: { min: 0, max: 100 } }}
+                sx={{ maxWidth: 220 }}
+              />
               <Box sx={{ display: "flex", gap: 2, alignItems: "center", mt: 3, flexWrap: "wrap" }}>
                 <TextField label={selectedLine === null ? "Select a line to comment" : `Comment on line ${selectedLine + 1}`} value={newComment} onChange={(event) => setNewComment(event.target.value)} sx={{ flexGrow: 1 }} disabled={selectedLine === null} />
                 <Button variant="outlined" disabled={selectedLine === null || !newComment.trim()} onClick={() => { if (selectedLine !== null) setComments([...comments, { lineNumber: selectedLine, text: newComment }]); setNewComment(""); }}>Add Comment</Button>
-                <Button variant="contained" color="success" disabled={gradeSaving} onClick={saveGrade}>{savedGrade === totalGrade ? "Saved" : "Save Grade"}: {Number.isNaN(totalGrade) ? 0 : totalGrade}%</Button>
+                <Button variant="contained" color="success" disabled={gradeSaving} onClick={saveGrade}>{savedGrade === gradePercent ? "Saved" : "Save Grade"}: {Number.isNaN(gradePercent) ? 0 : gradePercent}%</Button>
               </Box>
             </Paper>
           </>
@@ -1114,27 +1659,76 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
 function ClassManagement({ assignmentId }: { assignmentId?: string }) {
   const router = useRouter();
   const [students, setStudents] = useState<RosterStudent[]>([]);
-  const [form, setForm] = useState({ displayName: "", email: "" });
+  const [pendingInvitations, setPendingInvitations] = useState<AssignmentRosterResponse["pendingInvitations"]>([]);
+  const [currentClass, setCurrentClass] = useState<ProfessorClass | null>(null);
+  const [inviteEmails, setInviteEmails] = useState<string[]>([]);
+  const [inviteInput, setInviteInput] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const loadRoster = useCallback(() => {
     if (!assignmentId) return;
     loadJson<AssignmentRosterResponse>(`/api/professor/classes/${assignmentId}/students`)
-      .then((data) => setStudents(data.students))
+      .then((data) => {
+        setStudents(data.students);
+        setPendingInvitations(data.pendingInvitations);
+      })
       .catch((nextError) => setError(readError(nextError)));
   }, [assignmentId]);
 
-  useEffect(() => loadRoster(), [loadRoster]);
-
-  async function enroll(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    loadRoster();
     if (!assignmentId) return;
+    loadJson<ProfessorClassListResponse>("/api/professor/classes")
+      .then((data) => setCurrentClass(data.classes.find((classroom) => classroom.id === assignmentId) || null))
+      .catch((nextError) => setError(readError(nextError)));
+  }, [assignmentId, loadRoster]);
+
+  async function inviteStudents(event: FormEvent<HTMLFormElement>) {
+    if (!assignmentId) return;
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    setNotice("");
     try {
-      await postJson(`/api/professor/classes/${assignmentId}/students`, form satisfies EnrollAssignmentStudentBody);
-      setForm({ displayName: "", email: "" });
+      const result = await postJson<InviteClassStudentsResponse>(
+        `/api/professor/classes/${assignmentId}/invitations`,
+        { emails: inviteEmails } satisfies InviteClassStudentsBody
+      );
+      setInviteEmails([]);
+      setInviteInput("");
+      setNotice(`Sent ${result.invitations.length} class invitation email${result.invitations.length === 1 ? "" : "s"}.`);
       loadRoster();
     } catch (nextError) {
       setError(readError(nextError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function removeStudent(studentId: string) {
+    if (!assignmentId) return;
+    setLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      await fetch(`/api/professor/classes/${assignmentId}/students`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId } satisfies RemoveAssignmentStudentBody)
+      }).then(async (response) => {
+        if (!response.ok) {
+          const data = await response.json().catch(() => null) as { error?: string } | null;
+          throw new Error(data?.error || "Unable to remove student.");
+        }
+      });
+      setNotice("Student removed from the class.");
+      loadRoster();
+    } catch (nextError) {
+      setError(readError(nextError));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -1143,29 +1737,146 @@ function ClassManagement({ assignmentId }: { assignmentId?: string }) {
       <AppBar position="static" elevation={0} color="success"><Toolbar><IconButton edge="start" color="inherit" onClick={() => router.push("/professor")}><ArrowBack /></IconButton><Typography variant="h6" sx={{ ml: 2 }}>Class Management</Typography></Toolbar></AppBar>
       <Container maxWidth="lg" sx={{ py: 4 }}>
         {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+        {notice && <Alert severity="success" sx={{ mb: 3 }} onClose={() => setNotice("")}>{notice}</Alert>}
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "2fr 1fr" }, gap: 3 }}>
           <Paper sx={{ p: 3 }}>
-            <Typography variant="h5" sx={{ mb: 3 }}>Student Roster</Typography>
-            <TableContainer><Table><TableHead><TableRow><TableCell>Student</TableCell><TableCell>Email</TableCell><TableCell>Engagement</TableCell><TableCell>Trend</TableCell></TableRow></TableHead><TableBody>
+            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 2, mb: 3, flexWrap: "wrap" }}>
+              <Box>
+                <Typography variant="h5">Student Roster</Typography>
+                {currentClass && <Typography variant="body2" color="text.secondary">Join code: {currentClass.joinCode}</Typography>}
+              </Box>
+              {currentClass && (
+                <Button variant="outlined" startIcon={<ContentCopy />} onClick={() => void navigator.clipboard.writeText(currentClass.joinCode)}>
+                  Copy Join Code
+                </Button>
+              )}
+            </Box>
+            <TableContainer><Table><TableHead><TableRow><TableCell>Student</TableCell><TableCell>Email</TableCell><TableCell>Engagement</TableCell><TableCell>Trend</TableCell><TableCell align="right">Action</TableCell></TableRow></TableHead><TableBody>
               {students.map((student, index) => (
                 <TableRow key={student.studentId}>
                   <TableCell><Box sx={{ display: "flex", alignItems: "center", gap: 1 }}><Avatar>{student.studentName[0]}</Avatar>{student.studentName}</Box></TableCell>
                   <TableCell>{student.studentEmail}</TableCell>
                   <TableCell><LinearProgress variant="determinate" value={70 + (index % 3) * 8} sx={{ height: 8, borderRadius: 4 }} /></TableCell>
                   <TableCell>{index % 2 ? <TrendingDown color="warning" /> : <TrendingUp color="success" />}</TableCell>
+                  <TableCell align="right"><IconButton color="error" onClick={() => void removeStudent(student.studentId)} disabled={loading}><Delete /></IconButton></TableCell>
                 </TableRow>
               ))}
+              {!students.length && <TableRow><TableCell colSpan={5}><Typography variant="body2" color="text.secondary">No students have joined yet.</Typography></TableCell></TableRow>}
             </TableBody></Table></TableContainer>
           </Paper>
           <Paper sx={{ p: 3 }}>
-            <Typography variant="h5" sx={{ mb: 2 }}>Invite Student</Typography>
-            <form onSubmit={enroll}>
-              <TextField fullWidth label="Student Name" value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} sx={{ mb: 2 }} />
-              <TextField fullWidth label="Student Email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} sx={{ mb: 2 }} />
-              <Button type="submit" variant="contained" color="success" startIcon={<Email />} fullWidth disabled={!form.displayName || !form.email}>Send Invite</Button>
+            <Typography variant="h5" sx={{ mb: 2 }}>Invite Students</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Add one or more student emails. Each student receives an invitation email and confirms by accepting it.
+            </Typography>
+            <form onSubmit={inviteStudents}>
+              <Autocomplete
+                multiple
+                freeSolo
+                options={[]}
+                value={inviteEmails}
+                inputValue={inviteInput}
+                onInputChange={(_, value) => setInviteInput(value)}
+                onChange={(_, value) => setInviteEmails(value.map((item) => item.trim()).filter(Boolean))}
+                renderInput={(params) => <TextField {...params} label="Student Emails" placeholder="Type an email and press Enter" sx={{ mb: 2 }} />}
+                sx={{ mb: 2 }}
+              />
+              <Button type="submit" variant="contained" color="success" startIcon={<Email />} fullWidth disabled={!inviteEmails.length || loading}>Send Invite</Button>
             </form>
+            <Divider sx={{ my: 3 }} />
+            <Typography variant="subtitle1" sx={{ mb: 1 }}>Pending Invitations</Typography>
+            {pendingInvitations.map((invitation) => (
+              <Chip key={invitation.invitationId} label={invitation.email} sx={{ mr: 1, mb: 1 }} />
+            ))}
+            {!pendingInvitations.length && <Typography variant="body2" color="text.secondary">No pending invitation emails.</Typography>}
           </Paper>
         </Box>
+      </Container>
+    </Box>
+  );
+}
+
+function InvitationPage({ token }: { token?: string }) {
+  const router = useRouter();
+  const [invitation, setInvitation] = useState<ClassInvitationLookupResponse["invitation"] | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accepting, setAccepting] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const redirect = token ? `/invite/${token}` : "/invite";
+
+  useEffect(() => {
+    if (!token) {
+      setError("Invitation link is invalid.");
+      setLoading(false);
+      return;
+    }
+
+    Promise.all([
+      loadJson<ClassInvitationLookupResponse>(`/api/class-invitations/${token}`),
+      fetch("/api/auth/me").then(async (response) => response.ok ? response.json() as Promise<{ user: AuthUser | null }> : { user: null })
+    ])
+      .then(([inviteData, authData]) => {
+        setInvitation(inviteData.invitation);
+        setUser(authData.user);
+      })
+      .catch((nextError) => setError(readError(nextError)))
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  async function acceptInvitation() {
+    if (!token) return;
+    setAccepting(true);
+    setError("");
+    setNotice("");
+    try {
+      const accepted = await postJson<AcceptClassInvitationResponse>("/api/class-invitations/accept", { token });
+      setNotice(`Joined ${accepted.class.name}.`);
+      setTimeout(() => router.push("/student"), 800);
+    } catch (nextError) {
+      setError(readError(nextError));
+    } finally {
+      setAccepting(false);
+    }
+  }
+
+  return (
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" }}>
+      <Container maxWidth="sm">
+        <Paper elevation={10} sx={{ p: 4, borderRadius: 3 }}>
+          <Typography variant="h4" sx={{ fontWeight: 600, mb: 1, textAlign: "center" }}>DraftProof Class Invitation</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3, textAlign: "center" }}>
+            Accept your class invitation to unlock assignments in DraftProof.
+          </Typography>
+          {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+          {notice && <Alert severity="success" sx={{ mb: 3 }}>{notice}</Alert>}
+          {loading ? (
+            <LinearProgress />
+          ) : invitation ? (
+            <>
+              <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+                <Typography variant="h6">{invitation.className}</Typography>
+                <Typography variant="body2" color="text.secondary">Invited email: {invitation.email}</Typography>
+              </Paper>
+              {!user ? (
+                <Box sx={{ display: "grid", gap: 2 }}>
+                  <Button variant="contained" onClick={() => router.push(`/login/student?redirect=${encodeURIComponent(redirect)}`)}>Sign In to Accept</Button>
+                  <Button variant="outlined" onClick={() => router.push(`/signup?role=student&email=${encodeURIComponent(invitation.email)}&redirect=${encodeURIComponent(redirect)}`)}>Create Student Account</Button>
+                </Box>
+              ) : user.role !== "student" ? (
+                <Alert severity="warning">Sign in with a student account for {invitation.email} to accept this invitation.</Alert>
+              ) : (
+                <Box sx={{ display: "grid", gap: 2 }}>
+                  <Alert severity="info">Account: {user.name}. Accepting will add you to this class immediately.</Alert>
+                  <Button variant="contained" onClick={() => void acceptInvitation()} disabled={accepting}>
+                    {accepting ? "Accepting..." : "Accept Invitation"}
+                  </Button>
+                </Box>
+              )}
+            </>
+          ) : null}
+        </Paper>
       </Container>
     </Box>
   );

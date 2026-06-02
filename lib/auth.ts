@@ -47,6 +47,24 @@ type PendingSignupRow = {
   expires_at: Date | string;
 };
 
+type PasswordResetRow = {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: UserRole;
+  token_hash: string;
+  expires_at: Date | string;
+  used_at: Date | string | null;
+};
+
+type TransactionalEmailInput = {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  logLabel?: string;
+};
+
 const scrypt = promisify(scryptCallback);
 const PASSWORD_SCHEME = "scrypt";
 const SCRYPT_KEY_LENGTH = 64;
@@ -150,6 +168,10 @@ export type SignupVerificationConfirmInput = {
 
 export type SignupVerificationResendResult =
   | { ok: true; delivery: "email" | "development"; expiresInMinutes: number; code?: string }
+  | { ok: false; status: number; error: string };
+
+export type PasswordResetRequestResult =
+  | { ok: true; delivery: "email" | "development"; expiresInMinutes: number; token?: string }
   | { ok: false; status: number; error: string };
 
 export async function createCredentialUser(client: QueryClient, input: SignupInput): Promise<SignupResult> {
@@ -358,6 +380,112 @@ export async function resendSignupVerification(
     : { ok: false, status: delivery.status, error: delivery.error };
 }
 
+export async function requestPasswordReset(
+  client: QueryClient,
+  emailInput: string
+): Promise<PasswordResetRequestResult> {
+  const email = normalizeEmail(emailInput);
+  const expiresInMinutes = 60;
+  if (!email) {
+    return { ok: true, delivery: process.env.NODE_ENV === "production" ? "email" : "development", expiresInMinutes };
+  }
+
+  const result = await client.query<{
+    user_id: string;
+    email: string;
+    display_name: string;
+    role: UserRole;
+  }>(
+    `select app_users.id as user_id, app_users.email, app_users.display_name, app_users.role
+     from app_users
+     join auth_credentials on auth_credentials.user_id = app_users.id
+     where app_users.email = $1`,
+    [email]
+  );
+  const user = result.rows[0];
+  if (!user || (user.role !== "student" && user.role !== "professor")) {
+    return { ok: true, delivery: process.env.NODE_ENV === "production" ? "email" : "development", expiresInMinutes };
+  }
+
+  const token = createPasswordResetToken();
+  const tokenHash = hashPasswordResetToken(token);
+  await client.query(
+    `insert into password_reset_tokens (user_id, token_hash, expires_at, used_at, created_at, updated_at)
+     values ($1, $2, now() + interval '60 minutes', null, now(), now())
+     on conflict (user_id) do update set
+       token_hash = excluded.token_hash,
+       expires_at = excluded.expires_at,
+       used_at = null,
+       created_at = now(),
+       updated_at = now()`,
+    [user.user_id, tokenHash]
+  );
+
+  const resetUrl = `${getAppBaseUrl()}/reset-password/${token}`;
+  const delivery = await sendTransactionalEmail({
+    to: user.email,
+    subject: "Reset your DraftProof password",
+    text: `Reset your DraftProof password here: ${resetUrl}. This link expires in 60 minutes.`,
+    html: `<p>Reset your DraftProof password by clicking the link below.</p><p><a href="${resetUrl}">Reset password</a></p><p>This link expires in 60 minutes.</p>`,
+    logLabel: `password reset link for ${user.email}: ${resetUrl}`
+  });
+  return delivery.ok
+    ? { ok: true, delivery: delivery.delivery, expiresInMinutes, token: delivery.delivery === "development" ? token : undefined }
+    : { ok: false, status: delivery.status, error: "Unable to send password reset email." };
+}
+
+export async function validatePasswordResetToken(client: QueryClient, token: string) {
+  const reset = await getPasswordResetRow(client, token);
+  if (!reset.ok) return reset;
+  return { ok: true as const, user: { email: reset.row.email, name: reset.row.display_name } };
+}
+
+export async function resetPasswordWithToken(
+  client: QueryClient,
+  token: string,
+  password: string
+): Promise<SignupResult> {
+  const passwordError = validatePassword(password);
+  if (passwordError) return { ok: false, status: 400, error: passwordError };
+
+  await client.query("begin");
+  try {
+    const reset = await getPasswordResetRow(client, token, true);
+    if (!reset.ok) {
+      await client.query("rollback");
+      return reset;
+    }
+
+    const passwordHash = await hashPassword(password);
+    await client.query(
+      `update auth_credentials
+       set password_hash = $2,
+           updated_at = now()
+       where user_id = $1`,
+      [reset.row.user_id, passwordHash]
+    );
+    await client.query(
+      `update password_reset_tokens
+       set used_at = now(),
+           updated_at = now()
+       where user_id = $1`,
+      [reset.row.user_id]
+    );
+    await client.query("commit");
+    return {
+      ok: true,
+      user: {
+        id: reset.row.user_id,
+        name: reset.row.display_name,
+        role: reset.row.role
+      }
+    };
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  }
+}
+
 export async function cleanupExpiredSignupVerifications(client: QueryClient) {
   const result = await client.query<{ deleted_count: string }>(
     `with deleted as (
@@ -434,9 +562,9 @@ export function normalizeEmail(email: string) {
 }
 
 export function validatePassword(password: string) {
-  if (password.length < 12) return "Password must be at least 12 characters.";
-  if (!/[a-z]/i.test(password) || !/[0-9]/.test(password)) {
-    return "Password must include letters and numbers.";
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    return "Password must include at least 1 uppercase letter, 1 lowercase letter, and 1 number.";
   }
   return "";
 }
@@ -514,9 +642,19 @@ function createVerificationCode() {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
 }
 
+function createPasswordResetToken() {
+  return randomBytes(24).toString("base64url");
+}
+
 function hashVerificationCode(email: string, code: string) {
   return createHmac("sha256", verificationSecret())
     .update(`${normalizeEmail(email)}:${code}`)
+    .digest("hex");
+}
+
+function hashPasswordResetToken(token: string) {
+  return createHmac("sha256", passwordResetSecret())
+    .update(token)
     .digest("hex");
 }
 
@@ -524,18 +662,35 @@ function verificationSecret() {
   return process.env.AUTH_EMAIL_VERIFICATION_SECRET || sessionSecret();
 }
 
+function passwordResetSecret() {
+  return process.env.AUTH_PASSWORD_RESET_SECRET || verificationSecret();
+}
+
 async function sendSignupVerificationEmail(email: string, code: string) {
+  const subject = "Your DraftProof verification code";
+  const text = `Your DraftProof verification code is ${code}. It expires in 10 minutes.`;
+  const result = await sendTransactionalEmail({
+    to: email,
+    subject,
+    text,
+    html: `<p>Your DraftProof verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`,
+    logLabel: `signup verification code for ${email}: ${code}`
+  });
+  return result.ok
+    ? { ok: true as const, delivery: result.delivery, code: result.delivery === "development" ? code : undefined }
+    : { ok: false as const, status: result.status, error: "Unable to send verification email." };
+}
+
+export async function sendTransactionalEmail(input: TransactionalEmailInput) {
   const resendApiKey = process.env.RESEND_API_KEY;
   const from = process.env.AUTH_FROM_EMAIL || process.env.RESEND_FROM_EMAIL;
-  const subject = "Your AuthorCheck verification code";
-  const text = `Your AuthorCheck verification code is ${code}. It expires in 10 minutes.`;
 
   if (!resendApiKey || !from) {
     if (process.env.NODE_ENV === "production") {
       return { ok: false as const, status: 503, error: "Email delivery is not configured." };
     }
-    console.info(`[auth] signup verification code for ${email}: ${code}`);
-    return { ok: true as const, delivery: "development" as const, code };
+    if (input.logLabel) console.info(`[auth] ${input.logLabel}`);
+    return { ok: true as const, delivery: "development" as const, code: undefined };
   }
 
   const response = await fetch("https://api.resend.com/emails", {
@@ -546,17 +701,50 @@ async function sendSignupVerificationEmail(email: string, code: string) {
     },
     body: JSON.stringify({
       from,
-      to: [email],
-      subject,
-      text,
-      html: `<p>Your AuthorCheck verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`
+      to: [input.to],
+      subject: input.subject,
+      text: input.text,
+      html: input.html
     })
   });
   if (!response.ok) {
-    return { ok: false as const, status: 502, error: "Unable to send verification email." };
+    return { ok: false as const, status: 502, error: "Unable to send email." };
   }
 
-  return { ok: true as const, delivery: "email" as const };
+  return { ok: true as const, delivery: "email" as const, code: undefined };
+}
+
+async function getPasswordResetRow(client: QueryClient, token: string, lock = false) {
+  const result = await client.query<PasswordResetRow>(
+    `select
+       password_reset_tokens.user_id,
+       password_reset_tokens.token_hash,
+       password_reset_tokens.expires_at,
+       password_reset_tokens.used_at,
+       app_users.email,
+       app_users.display_name,
+       app_users.role
+     from password_reset_tokens
+     join app_users on app_users.id = password_reset_tokens.user_id
+     where password_reset_tokens.token_hash = $1
+     ${lock ? "for update" : ""}`,
+    [hashPasswordResetToken(token)]
+  );
+  const row = result.rows[0];
+  if (!row) return { ok: false as const, status: 404, error: "Password reset link is invalid." };
+  if (row.used_at) return { ok: false as const, status: 410, error: "Password reset link has already been used." };
+  if (new Date(row.expires_at).getTime() <= Date.now()) {
+    return { ok: false as const, status: 410, error: "Password reset link expired. Request a new one." };
+  }
+  return { ok: true as const, row };
+}
+
+export function getAppBaseUrl(env: Record<string, string | undefined> = process.env) {
+  const explicit = env.APP_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (env.VERCEL_URL) return `https://${env.VERCEL_URL}`;
+  return "https://www.draftproof.org";
 }
 
 async function createCredentialUserWithPasswordHash(

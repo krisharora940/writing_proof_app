@@ -8,9 +8,11 @@ test("Postgres schema includes core production tables", () => {
   [
     "app_users",
     "auth_identities",
+    "password_reset_tokens",
     "assignments",
     "assignment_instructors",
     "assignment_students",
+    "class_invitations",
     "writing_sessions",
     "writing_session_state",
     "writing_events",
@@ -70,12 +72,17 @@ test("schema supports authenticated identity and professor assignment access", (
   assert.match(schema, /create table if not exists auth_identities/);
   assert.match(schema, /unique \(provider, provider_subject\)/);
   assert.match(schema, /create table if not exists auth_credentials/);
+  assert.match(schema, /create table if not exists password_reset_tokens/);
   assert.match(schema, /password_hash text not null/);
   assert.match(schema, /check \(position\('scrypt\$' in password_hash\) = 1\)/);
   assert.match(schema, /create table if not exists assignment_instructors/);
   assert.match(schema, /primary key \(assignment_id, professor_id\)/);
   assert.match(schema, /kind text not null default 'assignment'/);
   assert.match(schema, /class_id uuid references assignments/);
+  assert.match(schema, /join_code text/);
+  assert.match(schema, /create unique index if not exists assignments_join_code_unique/);
+  assert.match(schema, /create table if not exists class_invitations/);
+  assert.match(schema, /token_hash text not null unique/);
 });
 
 test("schema captures AI evaluation audit metadata", () => {

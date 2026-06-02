@@ -1,12 +1,16 @@
 import type {
+  AcceptClassInvitationResponse,
   AppendWritingEventRequest,
   AssignmentRosterResponse,
   AssignmentSubmissionListResponse,
+  ClassInvitationLookupResponse,
   CreateProfessorAssignmentBody,
   CreateProfessorAssignmentResponse,
   CreateProfessorClassBody,
   CreateProfessorClassResponse,
   EnrollAssignmentStudentBody,
+  InviteClassStudentsBody,
+  InviteClassStudentsResponse,
   PasteEventCard,
   ProfessorReportResponse,
   ProfessorAssignmentListResponse,
@@ -19,6 +23,7 @@ import type {
   SaveProfessorGradeResponse,
   SessionMetricsResponse,
   SummaryComparisonResponse,
+  JoinClassByCodeResponse,
   LockSubmissionRequest,
   StudentAssignmentListResponse,
   StudentSessionResponse,
@@ -57,6 +62,7 @@ export type DemoRepositoryState = {
   assignments: ProfessorAssignmentListResponse["assignments"];
   classes: ProfessorClassListResponse["classes"];
   roster: AssignmentRosterResponse["students"];
+  pendingInvitations: AssignmentRosterResponse["pendingInvitations"];
   session: ServerSession;
   draftText: string;
   events: WritingEvent[];
@@ -192,6 +198,7 @@ export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState
     classes: [{
       id: DEMO_ASSIGNMENT_ID,
       name: "Demo Class",
+      joinCode: "DEMO2026",
       studentCount: 1,
       createdAt: 0
     }],
@@ -209,6 +216,7 @@ export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState
       studentEmail: "student@example.test",
       enrolledAt: 0
     }],
+    pendingInvitations: [],
     session: {
       id: DEMO_SESSION_ID,
       assignmentId: DEMO_ASSIGNMENT_ID,
@@ -239,6 +247,7 @@ export function resetDemoRepository(now = Date.now()) {
   repositoryState.classes = nextState.classes;
   repositoryState.assignments = nextState.assignments;
   repositoryState.roster = nextState.roster;
+  repositoryState.pendingInvitations = nextState.pendingInvitations;
   repositoryState.draftText = nextState.draftText;
   repositoryState.events = nextState.events;
   repositoryState.snapshots = nextState.snapshots;
@@ -371,6 +380,7 @@ export function listStudentAssignmentsDemo(
     value: {
       assignments: state.assignments.map((assignment) => ({
         ...assignment,
+        className: state.classes.find((classroom) => classroom.id === assignment.classId)?.name || null,
         enrolledAt: state.roster.find((student) => student.studentId === studentId)?.enrolledAt || 0,
         sessionId: state.session.assignmentId === assignment.id ? state.session.id : null,
         status: state.session.assignmentId === assignment.id ? state.session.status || "draft" : "not_started",
@@ -432,6 +442,7 @@ export function createProfessorClassDemo(
   const classroom = {
     id: crypto.randomUUID(),
     name,
+    joinCode: "DEMO2026",
     studentCount: 0,
     createdAt: Date.now()
   };
@@ -472,12 +483,94 @@ export function listAssignmentRosterDemo(
   if (professorId !== DEMO_PROFESSOR_ID) {
     return { ok: false, status: 403, error: "Professor cannot access this roster." };
   }
-  if (!state.assignments.some((assignment) => assignment.id === assignmentId)) {
+  if (!state.assignments.some((assignment) => assignment.id === assignmentId) && !state.classes.some((classroom) => classroom.id === assignmentId)) {
     return { ok: false, status: 404, error: "Assignment not found." };
   }
 
   const students = assignmentId === DEMO_ASSIGNMENT_ID ? state.roster : [];
-  return { ok: true, value: { students } };
+  const pendingInvitations = assignmentId === DEMO_ASSIGNMENT_ID ? state.pendingInvitations : [];
+  return { ok: true, value: { students, pendingInvitations } };
+}
+
+export function inviteClassStudentsDemo(
+  state: DemoRepositoryState,
+  assignmentId: string,
+  professorId: string,
+  body: InviteClassStudentsBody
+): MutationResult<InviteClassStudentsResponse> {
+  if (professorId !== DEMO_PROFESSOR_ID) {
+    return { ok: false, status: 403, error: "Professor cannot manage this roster." };
+  }
+  if (!state.classes.some((classroom) => classroom.id === assignmentId)) {
+    return { ok: false, status: 404, error: "Class not found." };
+  }
+
+  const invitations = body.emails
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+    .map((email) => ({
+      invitationId: crypto.randomUUID(),
+      email,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000
+    }));
+  if (!invitations.length) return { ok: false, status: 400, error: "At least one valid email is required." };
+  state.pendingInvitations = invitations;
+  return { ok: true, value: { invitations } };
+}
+
+export function getClassInvitationByTokenDemo(
+  _state: DemoRepositoryState,
+  token: string
+): MutationResult<ClassInvitationLookupResponse> {
+  if (token !== "demo-invite") return { ok: false, status: 404, error: "Invitation not found." };
+  return {
+    ok: true,
+    value: {
+      invitation: {
+        invitationId: "demo-invite",
+        classId: DEMO_ASSIGNMENT_ID,
+        className: "Demo Class",
+        email: "student@example.test",
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        acceptedAt: null
+      }
+    }
+  };
+}
+
+export function acceptClassInvitationDemo(
+  state: DemoRepositoryState,
+  token: string,
+  userId: string
+): MutationResult<AcceptClassInvitationResponse> {
+  if (token !== "demo-invite" || userId !== DEMO_STUDENT_ID) {
+    return { ok: false, status: 403, error: "Only the invited demo student can accept this invitation." };
+  }
+  return {
+    ok: true,
+    value: {
+      class: state.classes[0],
+      assignmentsAdded: 1
+    }
+  };
+}
+
+export function joinClassByCodeDemo(
+  state: DemoRepositoryState,
+  studentId: string,
+  code: string
+): MutationResult<JoinClassByCodeResponse> {
+  if (studentId !== DEMO_STUDENT_ID || code.trim().toUpperCase() !== "DEMO2026") {
+    return { ok: false, status: 404, error: "Class code not found." };
+  }
+  return {
+    ok: true,
+    value: {
+      class: state.classes[0],
+      assignmentsAdded: 1
+    }
+  };
 }
 
 export function enrollAssignmentStudentDemo(
@@ -527,6 +620,15 @@ export function removeAssignmentStudentDemo(
   state.roster = state.roster.filter((student) => student.studentId !== body.studentId);
   if (state.roster.length === beforeCount) return { ok: false, status: 404, error: "Student enrollment not found." };
   return { ok: true, value: { studentId: body.studentId } };
+}
+
+export function removeClassStudentDemo(
+  state: DemoRepositoryState,
+  classId: string,
+  professorId: string,
+  body: RemoveAssignmentStudentBody
+): MutationResult<{ studentId: string }> {
+  return removeAssignmentStudentDemo(state, classId, professorId, body);
 }
 
 export function listAssignmentSubmissionsDemo(

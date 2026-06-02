@@ -41,6 +41,18 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     purpose: "Reissue a signup verification code for an existing pending signup."
   },
   {
+    method: "POST",
+    path: "/api/auth/password-reset",
+    access: "student-or-professor",
+    purpose: "Request a password reset email for an existing credential account."
+  },
+  {
+    method: "POST",
+    path: "/api/auth/password-reset/:token",
+    access: "student-or-professor",
+    purpose: "Validate a password reset token and set a new password for that account."
+  },
+  {
     method: "GET",
     path: "/api/auth/me",
     access: "student-or-professor",
@@ -65,6 +77,12 @@ export const API_BOUNDARIES: ApiBoundary[] = [
     purpose: "Disabled legacy route; students receive one submission per assignment."
   },
   {
+    method: "POST",
+    path: "/api/student/classes/join",
+    access: "student",
+    purpose: "Join a class immediately by code and inherit access to its assignments."
+  },
+  {
     method: "GET",
     path: "/api/professor/classes",
     access: "professor",
@@ -84,9 +102,15 @@ export const API_BOUNDARIES: ApiBoundary[] = [
   },
   {
     method: "POST",
+    path: "/api/professor/classes/:classId/invitations",
+    access: "professor",
+    purpose: "Send one or more class invitation emails for a professor-owned class."
+  },
+  {
+    method: "DELETE",
     path: "/api/professor/classes/:classId/students",
     access: "professor",
-    purpose: "Invite or enroll one student in a professor-owned class."
+    purpose: "Remove one student from a professor-owned class and its assignments."
   },
   {
     method: "GET",
@@ -201,6 +225,14 @@ export type SignupVerifyCodeBody = {
 
 export type SignupResendCodeBody = {
   email: string;
+};
+
+export type PasswordResetRequestBody = {
+  email: string;
+};
+
+export type PasswordResetConfirmBody = {
+  password: string;
 };
 
 export type AppendWritingEventBody = {
@@ -320,6 +352,8 @@ export type StudentAssignmentListResponse = {
     id: string;
     title: string;
     prompt: string;
+    classId: string | null;
+    className: string | null;
     dueAt: number | null;
     enrolledAt: number;
     sessionId: string | null;
@@ -332,12 +366,6 @@ export type StudentAssignmentListResponse = {
 
 export type SaveProfessorGradeBody = {
   gradePercent: number;
-  rubricScores: {
-    argument: number;
-    evidence: number;
-    process: number;
-    presentation: number;
-  };
   comments: Array<{
     lineNumber: number;
     text: string;
@@ -364,6 +392,7 @@ export type ProfessorClassListResponse = {
   classes: Array<{
     id: string;
     name: string;
+    joinCode: string;
     studentCount: number;
     createdAt: number;
   }>;
@@ -410,11 +439,54 @@ export type AssignmentRosterResponse = {
     studentEmail: string;
     enrolledAt: number;
   }>;
+  pendingInvitations: Array<{
+    invitationId: string;
+    email: string;
+    createdAt: number;
+    expiresAt: number;
+  }>;
 };
 
 export type EnrollAssignmentStudentBody = {
   email: string;
   displayName: string;
+};
+
+export type InviteClassStudentsBody = {
+  emails: string[];
+};
+
+export type InviteClassStudentsResponse = {
+  invitations: AssignmentRosterResponse["pendingInvitations"];
+};
+
+export type JoinClassByCodeBody = {
+  code: string;
+};
+
+export type JoinClassByCodeResponse = {
+  class: ProfessorClassListResponse["classes"][number];
+  assignmentsAdded: number;
+};
+
+export type ClassInvitationLookupResponse = {
+  invitation: {
+    invitationId: string;
+    classId: string;
+    className: string;
+    email: string;
+    expiresAt: number;
+    acceptedAt: number | null;
+  };
+};
+
+export type AcceptClassInvitationBody = {
+  token: string;
+};
+
+export type AcceptClassInvitationResponse = {
+  class: ProfessorClassListResponse["classes"][number];
+  assignmentsAdded: number;
 };
 
 export type RemoveAssignmentStudentBody = {

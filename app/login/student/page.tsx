@@ -1,5 +1,6 @@
+import { Suspense } from "react";
 import { AuthorCheckApp } from "@/components/figma-authorcheck-client";
 
 export default function StudentLoginPage() {
-  return <AuthorCheckApp page="login" role="student" />;
+  return <Suspense><AuthorCheckApp page="login" role="student" /></Suspense>;
 }

@@ -34,8 +34,6 @@ function isSaveGradeBody(value: unknown): value is SaveProfessorGradeBody {
   const body = value as Partial<SaveProfessorGradeBody>;
   return (
     typeof body.gradePercent === "number" &&
-    body.rubricScores !== null &&
-    typeof body.rubricScores === "object" &&
     Array.isArray(body.comments)
   );
 }

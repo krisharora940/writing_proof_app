@@ -3,15 +3,17 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const pageSource = readFileSync(new URL("../components/figma-authorcheck-client.tsx", import.meta.url), "utf8");
-const authPageSource = readFileSync(new URL("../components/auth-page-client.tsx", import.meta.url), "utf8");
 const figmaSource = pageSource;
 const landingSource = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 const loginSource = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
 const studentLoginSource = readFileSync(new URL("../app/login/student/page.tsx", import.meta.url), "utf8");
 const instructorLoginSource = readFileSync(new URL("../app/login/instructor/page.tsx", import.meta.url), "utf8");
 const signupSource = readFileSync(new URL("../app/signup/page.tsx", import.meta.url), "utf8");
+const forgotPasswordSource = readFileSync(new URL("../app/forgot-password/page.tsx", import.meta.url), "utf8");
+const resetPasswordSource = readFileSync(new URL("../app/reset-password/[token]/page.tsx", import.meta.url), "utf8");
 const studentRouteSource = readFileSync(new URL("../app/student/page.tsx", import.meta.url), "utf8");
 const professorRouteSource = readFileSync(new URL("../app/professor/page.tsx", import.meta.url), "utf8");
+const inviteRouteSource = readFileSync(new URL("../app/invite/[token]/page.tsx", import.meta.url), "utf8");
 const assignmentsRouteSource = readFileSync(new URL("../app/api/assignments/route.ts", import.meta.url), "utf8");
 const currentAssignmentRouteSource = readFileSync(new URL("../app/api/assignments/current/route.ts", import.meta.url), "utf8");
 const replayRouteSource = readFileSync(new URL("../app/api/replay/route.ts", import.meta.url), "utf8");
@@ -21,7 +23,7 @@ const resetRouteSource = readFileSync(new URL("../app/api/sessions/reset/route.t
 
 test("app shell exposes public, auth, student, and professor routes", () => {
   assert.match(landingSource, /page="landing"/);
-  assert.match(figmaSource, /AuthorCheck/);
+  assert.match(figmaSource, /DraftProof/);
   assert.match(figmaSource, /\/login\/student/);
   assert.match(figmaSource, /\/login\/instructor/);
   assert.match(loginSource, /page="landing"/);
@@ -29,7 +31,10 @@ test("app shell exposes public, auth, student, and professor routes", () => {
   assert.match(studentLoginSource, /role="student"/);
   assert.match(instructorLoginSource, /page="login"/);
   assert.match(instructorLoginSource, /role="professor"/);
-  assert.match(signupSource, /mode="signup"/);
+  assert.match(signupSource, /page="signup"/);
+  assert.match(forgotPasswordSource, /page="forgot-password"/);
+  assert.match(resetPasswordSource, /page="reset-password"/);
+  assert.match(inviteRouteSource, /page="invite"/);
   assert.match(studentRouteSource, /role="student"/);
   assert.match(professorRouteSource, /role="professor"/);
 });
@@ -50,13 +55,23 @@ test("frontend hydrates identity and student state from backend session APIs", (
 });
 
 test("signup flow supports email verification resend", () => {
-  assert.match(authPageSource, /\/api\/auth\/signup\/verify/);
-  assert.match(authPageSource, /\/api\/auth\/signup\/resend/);
-  assert.match(authPageSource, /Resend code/);
+  assert.match(pageSource, /\/api\/auth\/signup\/verify/);
+  assert.match(pageSource, /\/api\/auth\/signup\/resend/);
+  assert.match(pageSource, /Resend Code/);
+  assert.match(pageSource, /no-reply@draftproof\.org/);
+});
+
+test("login exposes password reset flow", () => {
+  assert.match(pageSource, /Forgot password\?/);
+  assert.match(pageSource, /\/forgot-password/);
+  assert.match(pageSource, /\/api\/auth\/password-reset/);
+  assert.match(pageSource, /\/api\/auth\/password-reset\/\$\{token\}/);
 });
 
 test("student dashboard lists assigned work and opens the selected assignment", () => {
   assert.match(pageSource, /Quick Actions/);
+  assert.match(pageSource, /Join a Class/);
+  assert.match(pageSource, /\/api\/student\/classes\/join/);
   assert.match(pageSource, /Start Assignment/);
   assert.match(pageSource, /StudentAssignmentListResponse/);
   assert.match(pageSource, /router\.push\(`\/student\/assignment\/\$\{assignment\.id\}`\)/);
@@ -86,10 +101,12 @@ test("professor dashboard follows assignment to submission to report flow", () =
   assert.match(pageSource, /\/api\/assignments\/\$\{selectedAssignmentId\}\/submissions/);
   assert.match(pageSource, /\/api\/reports\/\$\{submission\.sessionId\}/);
   assert.match(pageSource, /\/api\/reports\/\$\{sessionId\}\/grade/);
-  assert.match(pageSource, /\/api\/professor\/classes\/\$\{created\.class\.id\}\/students/);
+  assert.match(pageSource, /\/api\/professor\/classes\/\$\{assignmentId\}\/invitations/);
+  assert.match(pageSource, /\/api\/class-invitations\/accept/);
   assert.match(pageSource, /Create Assignment/);
   assert.match(pageSource, /Create Class/);
-  assert.match(pageSource, /Invite students/);
+  assert.match(pageSource, /Invite Students/);
+  assert.match(pageSource, /Copy Join Code/);
   assert.match(pageSource, /Student Submission/);
   assert.match(pageSource, /Comprehension Summary/);
 });
@@ -103,10 +120,10 @@ test("student workflow does not expose new attempts", () => {
 });
 
 test("professor review exposes evidence and grading before dashboard completion", () => {
-  assert.match(pageSource, /AuthorCheck report and grading workspace/);
-  assert.match(pageSource, /Grading Rubric/);
+  assert.match(pageSource, /DraftProof report and grading workspace/);
+  assert.match(pageSource, /Final Grade/);
   assert.match(pageSource, /Save Grade/);
-  assert.match(pageSource, /totalGrade/);
+  assert.match(pageSource, /gradePercent/);
 });
 
 test("replay and summary comparison APIs load persisted session data", () => {

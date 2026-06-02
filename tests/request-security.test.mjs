@@ -40,7 +40,7 @@ test("hasRequiredProductionEnv reports launch-critical environment variables", (
     AUTH_SESSION_SECRET: "session-secret",
     AUTH_EMAIL_VERIFICATION_SECRET: "verify-secret",
     RESEND_API_KEY: "re_key",
-    AUTH_FROM_EMAIL: "AuthorCheck <noreply@example.com>"
+    AUTH_FROM_EMAIL: "DraftProof <noreply@example.com>"
   }), {
     databaseUrl: true,
     authSessionSecret: true,
@@ -66,10 +66,15 @@ test("cookie-auth mutation routes enforce same-origin checks", () => {
     "../app/api/writing-events/route.ts",
     "../app/api/submissions/lock/route.ts",
     "../app/api/timed-summaries/route.ts",
+    "../app/api/auth/password-reset/route.ts",
+    "../app/api/auth/password-reset/[token]/route.ts",
     "../app/api/professor/classes/route.ts",
     "../app/api/professor/classes/[classId]/students/route.ts",
+    "../app/api/professor/classes/[classId]/invitations/route.ts",
     "../app/api/professor/assignments/route.ts",
     "../app/api/professor/assignments/[assignmentId]/students/route.ts",
+    "../app/api/student/classes/join/route.ts",
+    "../app/api/class-invitations/accept/route.ts",
     "../app/api/replay/route.ts",
     "../app/api/reports/[sessionId]/grade/route.ts",
     "../app/api/sessions/reset/route.ts",

@@ -1,8 +1,8 @@
-# AuthorCheck
+# DraftProof
 
 ## Writing Integrity in the Age of AI
 
-AuthorCheck is a writing-process verification platform built for higher education.
+DraftProof is a writing-process verification platform built for higher education.
 
 Across higher education, faculty are increasingly skeptical of black-box AI detection systems due to false positives, unreliable scoring, and the institutional risk of accusing students without strong evidence. At the same time, instructors still need ways to preserve the legitimacy of writing assignments and other take-home assessments. 
 
@@ -12,7 +12,7 @@ Traditional AI detectors attempt to answer:
 
 > “Was AI used?”
 
-AuthorCheck approaches the problem differently. It asks:
+DraftProof approaches the problem differently. It asks:
 
 > “What does the writing process actually look like?”
 
@@ -48,9 +48,9 @@ They want:
 
 ---
 
-# What AuthorCheck Does
+# What DraftProof Does
 
-AuthorCheck provides structured authorship evidence through writing-process visibility.
+DraftProof provides structured authorship evidence through writing-process visibility.
 
 The platform is designed to help educators:
 
@@ -71,7 +71,7 @@ Not a policing engine.
 
 # Strategic Philosophy
 
-AuthorCheck is built around several core beliefs:
+DraftProof is built around several core beliefs:
 
 ## 1. AI Detection Alone Is Not Durable
 
@@ -100,7 +100,7 @@ It includes:
 * reflection,
 * and comprehension.
 
-AuthorCheck focuses on preserving visibility into those behaviors.
+DraftProof focuses on preserving visibility into those behaviors.
 
 ---
 
@@ -119,7 +119,7 @@ They want systems that:
 
 # Initial Focus
 
-AuthorCheck’s initial strategic focus is:
+DraftProof’s initial strategic focus is:
 
 * writing-intensive humanities courses,
 * first-year composition,
@@ -139,7 +139,7 @@ The project is currently optimized for:
 
 The long-term goal is larger than AI detection.
 
-AuthorCheck aims to help preserve:
+DraftProof aims to help preserve:
 
 * rigorous writing education,
 * authentic intellectual engagement,
@@ -172,7 +172,7 @@ Key strategic conclusions synthesized from the research include:
 
 # Current Status
 
-AuthorCheck is currently in MVP-stage development with ongoing refinement around:
+DraftProof is currently in MVP-stage development with ongoing refinement around:
 
 * backend rigor,
 * workflow validation,

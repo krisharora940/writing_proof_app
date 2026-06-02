@@ -1,10 +1,10 @@
-# AuthorCheck Product Roadmap
+# DraftProof Product Roadmap
 
 This roadmap turns the current prototype into a full web app for browser-based writing process evidence.
 
 ## Product Principle
 
-AuthorCheck records how a paper was written. It should not decide whether misconduct happened.
+DraftProof records how a paper was written. It should not decide whether misconduct happened.
 
 The product should avoid:
 
@@ -19,7 +19,7 @@ Important nuance: deletion events, idle time, and revision bursts are normal par
 
 ## Target App
 
-AuthorCheck should become a professional SaaS-style web app with:
+DraftProof should become a professional SaaS-style web app with:
 
 - public landing page
 - signup and login

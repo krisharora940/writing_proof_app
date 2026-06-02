@@ -13,10 +13,13 @@ import {
   getAuthenticatedUserForPassword,
   hashPassword,
   isDemoLoginAllowed,
+  requestPasswordReset,
   readSessionUserId,
+  resetPasswordWithToken,
   resendSignupVerification,
   SESSION_COOKIE,
   unauthorized,
+  validatePasswordResetToken,
   validatePassword,
   verifyPassword
 } from "../lib/auth.ts";
@@ -64,10 +67,22 @@ test("production demo credential login is always rejected", () => {
 });
 
 test("password hashes are salted and verifiable", async () => {
-  assert.equal(validatePassword("short"), "Password must be at least 12 characters.");
-  const hash = await hashPassword("writerPass123");
+  assert.equal(validatePassword("short"), "Password must be at least 8 characters.");
+  assert.equal(
+    validatePassword("lowercase1"),
+    "Password must include at least 1 uppercase letter, 1 lowercase letter, and 1 number."
+  );
+  assert.equal(
+    validatePassword("UPPERCASE1"),
+    "Password must include at least 1 uppercase letter, 1 lowercase letter, and 1 number."
+  );
+  assert.equal(
+    validatePassword("NoNumbers"),
+    "Password must include at least 1 uppercase letter, 1 lowercase letter, and 1 number."
+  );
+  const hash = await hashPassword("WriterPass123");
   assert.match(hash, /^scrypt\$/);
-  assert.equal(await verifyPassword("writerPass123", hash), true);
+  assert.equal(await verifyPassword("WriterPass123", hash), true);
   assert.equal(await verifyPassword("wrongPass123", hash), false);
 });
 
@@ -215,6 +230,63 @@ test("resend signup verification reissues a code for a pending signup", async ()
   assert.equal(result.delivery, "development");
   assert.match(result.code, /^\d{6}$/);
   assert.notEqual(updatedCodeHash, "");
+});
+
+test("password reset request stores a token and reset updates the password", async () => {
+  let storedTokenHash = "";
+  let updatedPasswordHash = "";
+  const client = {
+    calls: [],
+    async query(sql, params = []) {
+      this.calls.push({ sql, params });
+      if (/from app_users\s+join auth_credentials/.test(sql)) {
+        return {
+          rows: [{
+            user_id: "student-1",
+            email: "student@example.edu",
+            display_name: "Student One",
+            role: "student"
+          }]
+        };
+      }
+      if (/insert into password_reset_tokens/.test(sql)) {
+        storedTokenHash = params[1];
+        return { rows: [] };
+      }
+      if (/from password_reset_tokens/.test(sql)) {
+        return {
+          rows: [{
+            user_id: "student-1",
+            email: "student@example.edu",
+            display_name: "Student One",
+            role: "student",
+            token_hash: storedTokenHash,
+            expires_at: new Date(Date.now() + 60_000),
+            used_at: null
+          }]
+        };
+      }
+      if (/update auth_credentials/.test(sql)) {
+        updatedPasswordHash = params[1];
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const request = await requestPasswordReset(client, "student@example.edu");
+  assert.equal(request.ok, true);
+  assert.equal(storedTokenHash.length, 64);
+  assert.ok(request.token);
+
+  const validation = await validatePasswordResetToken(client, request.token);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.user.email, "student@example.edu");
+
+  const result = await resetPasswordWithToken(client, request.token, "WriterPass123");
+  assert.equal(result.ok, true);
+  assert.equal(result.user.id, "student-1");
+  assert.match(updatedPasswordHash, /^scrypt\$/);
 });
 
 test("signup verification rejects invalid codes", async () => {
