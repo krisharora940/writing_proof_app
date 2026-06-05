@@ -39,7 +39,7 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
   pasteEvents.forEach((event) => {
     const words = event.pasteWords || event.addedWords || countWords(event.added || "");
     const ratio = finalWords ? words / finalWords : 0;
-    if (finalWords >= 100 && ratio > 0.2) {
+    if (finalWords >= 100 && ratio >= 0.3) {
       signals.push(signal({
         id: `high-paste-ratio-${event.id}`,
         severity: "high",
@@ -47,7 +47,15 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
         detail: `${words} pasted words represented ${formatPercent(ratio)} of the submitted essay.`,
         event
       }));
-    } else if (words >= 50 && words <= 200) {
+    } else if (words >= 120) {
+      signals.push(signal({
+        id: `medium-large-paste-${event.id}`,
+        severity: "medium",
+        label: "Large paste event",
+        detail: `${words} words were inserted through one paste event.`,
+        event
+      }));
+    } else if (words >= 50 && words <= 119) {
       signals.push(signal({
         id: `medium-paste-${event.id}`,
         severity: "medium",
@@ -57,6 +65,17 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
       }));
     }
   });
+
+  const totalPastedWords = pasteEvents.reduce((total, event) => total + (event.pasteWords || event.addedWords || countWords(event.added || "")), 0);
+  const pasteShare = finalWords ? totalPastedWords / finalWords : 0;
+  if (pasteEvents.length >= 2 && finalWords >= 150 && pasteShare >= 0.35) {
+    signals.push(signal({
+      id: "high-repeated-paste-share",
+      severity: "high",
+      label: "Repeated paste-heavy drafting",
+      detail: `${pasteEvents.length} paste events contributed ${formatPercent(pasteShare)} of the final submission.`
+    }));
+  }
 
   if (finalWords >= 150) {
     const deletionRate = deletionWords / finalWords;
@@ -69,6 +88,27 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
       }));
     }
   }
+
+  orderedEvents.forEach((event) => {
+    const removedWords = event.removedWords || countWords(event.removed || "");
+    if (removedWords >= 80) {
+      signals.push(signal({
+        id: `positive-large-deletion-${event.id}`,
+        severity: "positive",
+        label: "Large revision pass",
+        detail: `${removedWords} words were removed in one editing pass.`
+      }));
+      return;
+    }
+    if (removedWords >= 30) {
+      signals.push(signal({
+        id: `positive-medium-deletion-${event.id}`,
+        severity: "positive",
+        label: "Substantive revision",
+        detail: `${removedWords} words were removed during revision.`
+      }));
+    }
+  });
 
   if (elapsedMs >= 60_000) {
     const activeRatio = activeMs / elapsedMs;
@@ -85,28 +125,29 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
   const sustainedWpm = findSustainedTypingSpeed(orderedEvents);
   if (sustainedWpm) {
     signals.push(signal({
-      id: "medium-sustained-high-wpm",
-      severity: "medium",
-      label: "High sustained typing speed",
+      id: sustainedWpm.wpm >= 145 ? "high-sustained-very-high-wpm" : "medium-sustained-high-wpm",
+      severity: sustainedWpm.wpm >= 145 ? "high" : "medium",
+      label: sustainedWpm.wpm >= 145 ? "Very high sustained typing speed" : "High sustained typing speed",
       detail: `${sustainedWpm.words} typed words were recorded over ${formatDuration(sustainedWpm.durationMs)}, about ${Math.round(sustainedWpm.wpm)} WPM.`
     }));
   }
 
-  if (finalWords >= 150 && spansSingleDay(editEvents)) {
+  const sessionPattern = detectDraftingSessions(editEvents);
+  if (sessionPattern.sessionCount >= 2) {
     signals.push(signal({
-      id: "medium-single-day-session",
-      severity: "medium",
-      label: "Single-day drafting span",
-      detail: "The recorded writing activity for this submission occurred within one calendar day."
+      id: "positive-multi-session-drafting",
+      severity: "positive",
+      label: "Multi-session drafting",
+      detail: `Recorded writing activity appears across ${sessionPattern.sessionCount} writing sessions with breaks up to ${formatDuration(sessionPattern.longestGapMs)}.`
     }));
   }
 
-  if (spansMultipleDays(editEvents)) {
+  if (sessionPattern.sessionCount >= 3 || sessionPattern.longestGapMs >= 90 * 60 * 1000) {
     signals.push(signal({
-      id: "positive-multiple-day-span",
+      id: "positive-extended-drafting-gaps",
       severity: "positive",
-      label: "Multiple-day writing span",
-      detail: "Recorded writing activity spans more than one calendar day."
+      label: "Extended drafting gaps",
+      detail: "The writing log includes longer pauses between drafting sessions, which is often consistent with staged revision."
     }));
   }
 
@@ -125,6 +166,16 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
       severity: "positive",
       label: "Non-linear section editing",
       detail: "Writing activity returned to earlier document sections before submission."
+    }));
+  }
+
+  const revisionBursts = countRevisionBursts(orderedEvents);
+  if (revisionBursts >= 3) {
+    signals.push(signal({
+      id: "positive-repeated-revision-bursts",
+      severity: "positive",
+      label: "Repeated revision cycles",
+      detail: `${revisionBursts} revision cycles were recorded across the drafting session.`
     }));
   }
 
@@ -186,7 +237,7 @@ function findSustainedTypingSpeed(events: WritingEvent[]) {
       const durationMs = typedEvents[end].at - typedEvents[start].at;
       if (durationMs >= 60_000) {
         const wpm = words / (durationMs / 60_000);
-        if (wpm > 120) return { words, durationMs, wpm };
+        if (wpm > 110) return { words, durationMs, wpm };
       }
     }
   }
@@ -199,20 +250,6 @@ function averageTypedWpm(events: WritingEvent[]) {
   const activeMs = typedEvents.reduce((total, event) => total + Math.min(event.durationSincePreviousMs || 0, 30_000), 0);
   if (!words || activeMs < 60_000) return null;
   return words / (activeMs / 60_000);
-}
-
-function spansSingleDay(events: WritingEvent[]) {
-  if (events.length < 2) return false;
-  return dayKey(events[0].at) === dayKey(events.at(-1)?.at || events[0].at);
-}
-
-function spansMultipleDays(events: WritingEvent[]) {
-  if (events.length < 2) return false;
-  return dayKey(events[0].at) !== dayKey(events.at(-1)?.at || events[0].at);
-}
-
-function dayKey(timestamp: number) {
-  return new Date(timestamp).toISOString().slice(0, 10);
 }
 
 function hasPauseEditRetypePattern(events: WritingEvent[]) {
@@ -231,6 +268,35 @@ function hasNonLinearOffsets(events: WritingEvent[]) {
     furthestStart = Math.max(furthestStart, event.start);
     return movedBack;
   });
+}
+
+function countRevisionBursts(events: WritingEvent[]) {
+  let bursts = 0;
+  for (let index = 0; index < events.length - 1; index += 1) {
+    const current = events[index];
+    const next = events[index + 1];
+    const currentRemoved = current.removedWords || countWords(current.removed || "");
+    if ((current.type === "delete" || currentRemoved > 0) && next.type === "insert" && (next.addedWords || 0) > 0) {
+      bursts += 1;
+    }
+  }
+  return bursts;
+}
+
+function detectDraftingSessions(events: WritingEvent[]) {
+  if (!events.length) return { sessionCount: 0, longestGapMs: 0 };
+  let sessionCount = 1;
+  let longestGapMs = 0;
+  for (let index = 1; index < events.length; index += 1) {
+    const current = events[index];
+    const previous = events[index - 1];
+    const gapMs = Math.max(current.at - previous.at, current.durationSincePreviousMs || 0);
+    longestGapMs = Math.max(longestGapMs, gapMs);
+    if (gapMs >= 25 * 60 * 1000) {
+      sessionCount += 1;
+    }
+  }
+  return { sessionCount, longestGapMs };
 }
 
 function formatPercent(value: number) {

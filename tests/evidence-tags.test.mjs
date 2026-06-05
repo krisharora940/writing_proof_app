@@ -26,7 +26,7 @@ test("generateProcessEvidenceTags creates neutral factual paste and revision tag
   assert.ok(tags.every((tag) => !/score|suspicion|cheat/i.test(`${tag.label} ${tag.detail}`)));
 });
 
-test("generateBehavioralRiskEvidenceTags maps severity signals to neutral tags", () => {
+test("generateBehavioralRiskEvidenceTags maps signals to neutral tags", () => {
   const tags = generateBehavioralRiskEvidenceTags([
     {
       id: "high-low-active-typing-share",
@@ -38,7 +38,7 @@ test("generateBehavioralRiskEvidenceTags maps severity signals to neutral tags",
   ]);
   const grouped = groupEvidenceTags(tags);
 
-  assert.equal(tags[0].label, "High: Low active typing share");
+  assert.equal(tags[0].label, "Atypical: Low active typing share");
   assert.equal(tags[0].category, "Behavioral Indicator");
   assert.equal(grouped["Behavioral Indicator"].length, 1);
   assert.ok(tags.every((tag) => !/suspicion|cheat|misconduct/i.test(`${tag.label} ${tag.detail}`)));

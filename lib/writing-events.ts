@@ -67,6 +67,15 @@ export function countWords(text: string) {
   return (text.trim().match(/\b[\w'-]+\b/g) || []).length;
 }
 
+export function countWordDelta(previous: string, next: string) {
+  const previousWords = countWords(previous);
+  const nextWords = countWords(next);
+  return {
+    addedWords: Math.max(0, nextWords - previousWords),
+    removedWords: Math.max(0, previousWords - nextWords)
+  };
+}
+
 export function formatDuration(ms: number) {
   const seconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(seconds / 60);

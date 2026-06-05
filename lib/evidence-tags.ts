@@ -132,7 +132,7 @@ function slugify(value: string) {
 }
 
 function formatSeverity(severity: BehavioralRiskSignal["severity"]) {
-  if (severity === "high") return "High";
-  if (severity === "medium") return "Medium";
-  return "Positive";
+  if (severity === "high") return "Atypical";
+  if (severity === "medium") return "Context";
+  return "Supportive";
 }

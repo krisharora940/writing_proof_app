@@ -20,8 +20,8 @@ const report = {
   authorCheck: {
     similarityPercent: 12,
     flag: "green",
-    flagLabel: "Green Flag",
-    flagDetail: "Likely originality based on 12% DraftProof similarity indicators.",
+    flagLabel: "More Typical",
+    flagDetail: "The recorded process indicators looked relatively typical overall (12%).",
     writingPatternChecks: [],
     styleConsistencyChecks: [],
     sourceHighlights: []

@@ -79,7 +79,7 @@ import {
   Warning
 } from "@mui/icons-material";
 import { addDays, format, isSameDay } from "date-fns";
-import { countWords, getDiff, type Snapshot, type WritingEvent } from "@/lib/writing-events";
+import { countWordDelta, countWords, getDiff, type Snapshot, type WritingEvent } from "@/lib/writing-events";
 import type {
   AcceptClassInvitationResponse,
   AppendWritingEventBody,
@@ -1084,6 +1084,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
     const previous = lastTextRef.current;
     const diff = getDiff(previous, nextContent);
     if (!diff.added && !diff.removed) return;
+    const wordDelta = countWordDelta(previous, nextContent);
     const now = Date.now();
     const eventType: WritingEvent["type"] = inputType === "insertFromPaste" || countWords(diff.added) >= 40 ? "paste" : diff.removed.length > diff.added.length ? "delete" : "insert";
     const event: Omit<WritingEvent, "id"> = {
@@ -1093,9 +1094,9 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
       start: diff.start,
       added: diff.added,
       removed: diff.removed,
-      addedWords: countWords(diff.added),
-      removedWords: countWords(diff.removed),
-      pasteWords: eventType === "paste" ? countWords(diff.added) : undefined,
+      addedWords: wordDelta.addedWords,
+      removedWords: wordDelta.removedWords,
+      pasteWords: eventType === "paste" ? wordDelta.addedWords : undefined,
       deletionEvent: !!diff.removed,
       removedCharacters: diff.removed.length,
       words: countWords(nextContent),
@@ -1433,7 +1434,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
               </Box>
               <TableContainer>
                 <Table>
-                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>DraftProof</TableCell><TableCell>Similarity</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
+                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>DraftProof</TableCell><TableCell>Process</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
                   <TableBody>
                     {visibleSubmissions.map((submission) => {
                       const report = submission.sessionId ? reports[submission.sessionId] : null;
@@ -1443,7 +1444,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
                           <TableCell>{statusLabel(submission.status)}</TableCell>
                           <TableCell>{submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : "Not submitted"}</TableCell>
                           <TableCell>{report ? <FlagChip flag={report.authorCheck.flag} label={report.authorCheck.flagLabel} /> : <Chip label="Pending" size="small" />}</TableCell>
-                          <TableCell>{report ? <SimilarityBar value={report.authorCheck.similarityPercent} /> : "..."}</TableCell>
+                          <TableCell>{report ? <ProcessIndicatorBar value={report.authorCheck.similarityPercent} /> : "..."}</TableCell>
                           <TableCell>
                             <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                               {submission.gradedAt && <Chip label={`Graded ${submission.gradePercent}%`} color="success" size="small" />}
@@ -1597,7 +1598,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
                 <Card sx={{ mb: 3, bgcolor: report.authorCheck.flag === "red" ? "#ffebee" : report.authorCheck.flag === "yellow" ? "#fff3e0" : "#e8f5e9" }}>
                   <CardContent>
                     <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-                      <Typography variant="h6">Similarity Indicators</Typography>
+                      <Typography variant="h6">Process Indicators</Typography>
                       <Typography variant="h4" color={flagColor(report.authorCheck.flag)}>{report.authorCheck.similarityPercent}%</Typography>
                     </Box>
                     <LinearProgress variant="determinate" value={report.authorCheck.similarityPercent} sx={{ height: 10, borderRadius: 5, mb: 2, "& .MuiLinearProgress-bar": { bgcolor: flagColor(report.authorCheck.flag) } }} />
@@ -1605,7 +1606,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
                   </CardContent>
                 </Card>
 
-                <Typography variant="subtitle1" sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}><ContentCopy /> Source Highlighting</Typography>
+                <Typography variant="subtitle1" sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}><ContentCopy /> Paste Event Highlights</Typography>
                 {report.authorCheck.sourceHighlights.length ? report.authorCheck.sourceHighlights.map((source) => (
                   <Card key={source.id} sx={{ mb: 2 }}>
                     <CardContent>
@@ -1996,7 +1997,7 @@ function FlagChip({ flag, label }: { flag: "red" | "yellow" | "green"; label: st
   return <Chip icon={<Flag />} label={label} size="small" sx={{ bgcolor: flagColor(flag), color: "white" }} />;
 }
 
-function SimilarityBar({ value }: { value: number }) {
+function ProcessIndicatorBar({ value }: { value: number }) {
   return (
     <Box sx={{ minWidth: 120 }}>
       <Typography variant="body2">{value}%</Typography>

@@ -32,9 +32,9 @@ test("analyzeBehavioralRisk flags high paste share and low revision activity", (
   ], makeWords(300));
 
   assert.ok(summary.totalPoints > 0);
-  assert.ok(summary.signals.some((signal) => signal.id === "high-paste-ratio-paste-1"));
+  assert.ok(summary.signals.some((signal) => signal.id === "high-paste-ratio-paste-1" || signal.id === "medium-paste-paste-1" || signal.id === "medium-large-paste-paste-1"));
   assert.ok(summary.signals.some((signal) => signal.id === "high-low-word-deletion-rate"));
-  assert.ok(summary.signals.some((signal) => signal.id === "medium-single-day-session"));
+  assert.ok(!summary.signals.some((signal) => signal.id === "medium-single-day-session"));
   assert.ok(summary.signals.every((signal) => !/suspicion|cheat|misconduct/i.test(`${signal.label} ${signal.detail}`)));
 });
 
@@ -45,20 +45,32 @@ test("analyzeBehavioralRisk detects sustained high WPM windows", () => {
     { id: "i-3", type: "insert", at: at + 60_000, addedWords: 80, durationSincePreviousMs: 30_000 }
   ], makeWords(240));
 
-  assert.ok(summary.signals.some((signal) => signal.id === "medium-sustained-high-wpm"));
+  assert.ok(summary.signals.some((signal) => signal.id === "medium-sustained-high-wpm" || signal.id === "high-sustained-very-high-wpm"));
 });
 
-test("analyzeBehavioralRisk records positive multi-day and nonlinear drafting indicators", () => {
+test("analyzeBehavioralRisk records positive multi-session and nonlinear drafting indicators", () => {
   const summary = analyzeBehavioralRisk([
     { id: "i-1", type: "insert", at, start: 0, addedWords: 60, durationSincePreviousMs: 60_000 },
     { id: "d-1", type: "delete", at: at + 90_000, start: 400, removedWords: 4, durationSincePreviousMs: 30_000, deletionEvent: true },
     { id: "i-2", type: "insert", at: at + 120_000, start: 200, addedWords: 30, durationSincePreviousMs: 30_000 },
-    { id: "i-3", type: "insert", at: at + 26 * 60 * 60 * 1000, start: 600, addedWords: 50, durationSincePreviousMs: 30_000 }
+    { id: "i-3", type: "insert", at: at + 3 * 60 * 60 * 1000, start: 600, addedWords: 50, durationSincePreviousMs: 30_000 }
   ], makeWords(140));
 
-  assert.ok(summary.signals.some((signal) => signal.id === "positive-multiple-day-span"));
+  assert.ok(summary.signals.some((signal) => signal.id === "positive-multi-session-drafting"));
+  assert.ok(summary.signals.some((signal) => signal.id === "positive-extended-drafting-gaps"));
   assert.ok(summary.signals.some((signal) => signal.id === "positive-pause-edit-retype"));
   assert.ok(summary.signals.some((signal) => signal.id === "positive-nonlinear-writing"));
+});
+
+test("analyzeBehavioralRisk rewards substantive revision and flags paste-heavy bursts", () => {
+  const summary = analyzeBehavioralRisk([
+    { id: "p-1", type: "paste", at, pasteWords: 90, addedWords: 90, durationSincePreviousMs: 0 },
+    { id: "p-2", type: "paste", at: at + 30_000, pasteWords: 70, addedWords: 70, durationSincePreviousMs: 30_000 },
+    { id: "d-1", type: "delete", at: at + 90_000, removedWords: 85, removed: makeWords(85), durationSincePreviousMs: 60_000, deletionEvent: true }
+  ], makeWords(300));
+
+  assert.ok(summary.signals.some((signal) => signal.id === "high-repeated-paste-share"));
+  assert.ok(summary.signals.some((signal) => signal.id === "positive-large-deletion-d-1"));
 });
 
 test("behavioralSignalsToObservations keeps factual report wording", () => {

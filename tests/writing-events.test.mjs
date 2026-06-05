@@ -6,6 +6,7 @@ import {
   analyzeComprehension,
   analyzeProcess,
   calculateSessionMetrics,
+  countWordDelta,
   countWords,
   formatDuration,
   getDiff
@@ -40,6 +41,13 @@ test("getDiff identifies insertions, deletions, and replacements", () => {
 test("countWords handles punctuation, apostrophes, and empty text", () => {
   assert.equal(countWords(""), 0);
   assert.equal(countWords("Drafting isn't copy-paste; it is revision."), 6);
+});
+
+test("countWordDelta tracks net word changes instead of per-keystroke fragments", () => {
+  assert.deepEqual(countWordDelta("", "h"), { addedWords: 1, removedWords: 0 });
+  assert.deepEqual(countWordDelta("h", "he"), { addedWords: 0, removedWords: 0 });
+  assert.deepEqual(countWordDelta("hello", "hello world"), { addedWords: 1, removedWords: 0 });
+  assert.deepEqual(countWordDelta("hello world", "hello"), { addedWords: 0, removedWords: 1 });
 });
 
 test("formatDuration rounds milliseconds and uses minute labels", () => {

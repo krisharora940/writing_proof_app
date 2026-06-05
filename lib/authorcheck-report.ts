@@ -43,15 +43,19 @@ export function buildAuthorCheckSummary(input: {
   const rawPercent = finalWords
     ? Math.round((pastedWords / finalWords) * 100)
     : 0;
-  const similarityPercent = clampPercent(
-    rawPercent + input.behavioralRisk.highCount * 10 + input.behavioralRisk.mediumCount * 4 - input.behavioralRisk.positiveCount * 3
-  );
+  const similarityPercent = clampPercent(Math.round(
+    rawPercent * 0.35 +
+    input.behavioralRisk.totalPoints * 12 +
+    input.behavioralRisk.highCount * 8 +
+    input.behavioralRisk.mediumCount * 4 -
+    input.behavioralRisk.positiveCount * 5
+  ));
   const flag = flagFor(similarityPercent, input.behavioralRisk);
 
   return {
     similarityPercent,
     flag,
-    flagLabel: flag === "red" ? "Red Flag" : flag === "yellow" ? "Yellow Flag" : "Green Flag",
+    flagLabel: flag === "red" ? "More Atypical" : flag === "yellow" ? "Mixed Signals" : "More Typical",
     flagDetail: flagDetail(flag, similarityPercent),
     writingPatternChecks: buildWritingPatternChecks(input.behavioralRisk),
     styleConsistencyChecks: buildStyleChecks(input.tags, input.summaryText),
@@ -59,10 +63,10 @@ export function buildAuthorCheckSummary(input: {
       const words = event.pasteWords || event.addedWords || countWords(event.added || "");
       return {
         id: `source-${event.id}`,
-        label: `Matched writing segment ${index + 1}`,
+        label: `Paste segment ${index + 1}`,
         similarityPercent: finalWords ? clampPercent(Math.round((words / finalWords) * 100)) : 0,
         excerpt: previewText(event.added || ""),
-        detail: `${words} words entered through paste input.`
+        detail: `${words} words entered through paste input and account for ${finalWords ? Math.round((words / finalWords) * 100) : 0}% of the final submission.`
       };
     })
   };
@@ -98,11 +102,11 @@ function buildStyleChecks(tags: EvidenceTag[], summaryText: string): AuthorCheck
         : "Timed comprehension response has not been submitted."
     },
     {
-      label: "Source highlighting",
+      label: "Paste retention",
       status: unchangedPaste ? "review" : "clear",
       detail: unchangedPaste
         ? `${unchangedPaste} pasted segment remained materially unchanged in the final text.`
-        : "No unchanged pasted source segment was identified."
+        : "No materially unchanged pasted segment was identified."
     }
   ];
 }
@@ -114,9 +118,9 @@ function flagFor(percent: number, behavioralRisk: BehavioralRiskSummary): Author
 }
 
 function flagDetail(flag: AuthorCheckFlag, percent: number) {
-  if (flag === "red") return `High review priority based on ${percent}% DraftProof similarity indicators.`;
-  if (flag === "yellow") return `Moderate concern based on ${percent}% DraftProof similarity indicators.`;
-  return `Likely originality based on ${percent}% DraftProof similarity indicators.`;
+  if (flag === "red") return `More atypical process indicators were observed in this session mix (${percent}%).`;
+  if (flag === "yellow") return `The process log shows a mixed set of indicators that may merit a second look (${percent}%).`;
+  return `The recorded process indicators looked relatively typical overall (${percent}%).`;
 }
 
 function clampPercent(value: number) {
