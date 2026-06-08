@@ -103,7 +103,10 @@ test("analyzeProcess flags large paste events and low active writing time", () =
   assert.equal(observations[0].group, "Major Event");
   assert.equal(observations[0].title, "Large insertion");
   assert.ok(observations.some((item) => item.title === "Low active writing time"));
-  assert.ok(observations.some((item) => item.title === "No revision activity"));
+  assert.ok(observations.some((item) => (
+    item.title === "No text-removal events recorded" &&
+    item.group === "Context Event"
+  )));
 });
 
 test("analyzeProcess records deletion and idle-gap context events", () => {
@@ -112,9 +115,9 @@ test("analyzeProcess records deletion and idle-gap context events", () => {
       id: "1",
       type: "delete",
       at,
-      removed: "old sentence",
-      removedCharacters: 12,
-      removedWords: 2,
+      removed: "x".repeat(60),
+      removedCharacters: 60,
+      removedWords: 10,
       durationSincePreviousMs: 5_000,
       deletionEvent: true
     },
@@ -131,6 +134,23 @@ test("analyzeProcess records deletion and idle-gap context events", () => {
 
   assert.ok(observations.some((item) => item.title === "Deletion event"));
   assert.ok(observations.some((item) => item.title === "Idle gap followed by insertion"));
+});
+
+test("analyzeProcess ignores small deletion events in observations", () => {
+  const observations = analyzeProcess([
+    {
+      id: "1",
+      type: "delete",
+      at,
+      removed: "old sentence",
+      removedCharacters: 12,
+      removedWords: 2,
+      durationSincePreviousMs: 5_000,
+      deletionEvent: true
+    }
+  ], makeWords(40));
+
+  assert.equal(observations.some((item) => item.title === "Deletion event"), false);
 });
 
 test("analyzeProcess returns a neutral typical-process observation when no flags apply", () => {

@@ -93,6 +93,8 @@ test("frontend student writes do not send client-owned identity", () => {
   assert.doesNotMatch(pageSource, /const request: AppendWritingEventBody = \{[^}]*studentId\s*:/s);
   assert.doesNotMatch(pageSource, /const request: LockSubmissionBody = \{[^}]*studentId\s*:/s);
   assert.doesNotMatch(pageSource, /const request: TimedSummaryBody = \{[^}]*studentId\s*:/s);
+  assert.match(pageSource, /responses = activeQuestions\.map/);
+  assert.match(pageSource, /summaryText = responses\.map\(\(response\) => response\.answer\)/);
 });
 
 test("professor dashboard follows assignment to submission to report flow", () => {

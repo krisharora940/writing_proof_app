@@ -114,16 +114,23 @@ create table if not exists assignments (
   kind text not null default 'assignment',
   class_id uuid references assignments(id) on delete set null,
   join_code text,
+  comprehension_check_enabled boolean not null default true,
+  comprehension_check_time_limit_minutes integer not null default 10,
+  comprehension_check_questions jsonb not null default '["What was the central claim or solution in your submission?","Which evidence, method, or steps did you use to support it?","What part of your submitted work would you revise first if you had more time?"]'::jsonb,
   due_at timestamptz,
   created_at timestamptz not null default now(),
   check (kind in ('class', 'assignment')),
-  check (kind = 'assignment' or class_id is null)
+  check (kind = 'assignment' or class_id is null),
+  check (comprehension_check_time_limit_minutes between 1 and 10)
 );
 
 alter table assignments
 add column if not exists kind text not null default 'assignment',
 add column if not exists class_id uuid references assignments(id) on delete set null,
-add column if not exists join_code text;
+add column if not exists join_code text,
+add column if not exists comprehension_check_enabled boolean not null default true,
+add column if not exists comprehension_check_time_limit_minutes integer not null default 10,
+add column if not exists comprehension_check_questions jsonb not null default '["What was the central claim or solution in your submission?","Which evidence, method, or steps did you use to support it?","What part of your submitted work would you revise first if you had more time?"]'::jsonb;
 
 alter table assignments
 drop constraint if exists assignments_kind_check;
@@ -136,6 +143,12 @@ drop constraint if exists assignments_class_id_check;
 
 alter table assignments
 add constraint assignments_class_id_check check (kind = 'assignment' or class_id is null);
+
+alter table assignments
+drop constraint if exists assignments_comprehension_check_time_limit_check;
+
+alter table assignments
+add constraint assignments_comprehension_check_time_limit_check check (comprehension_check_time_limit_minutes between 1 and 10);
 
 create unique index if not exists assignments_join_code_unique
 on assignments(join_code)
@@ -340,11 +353,22 @@ create table if not exists timed_summaries (
   started_at timestamptz not null,
   completed_at timestamptz not null,
   summary_text text not null,
+  response_items jsonb not null default '[]'::jsonb,
   summary_text_sha256 text not null,
   created_at timestamptz not null default now(),
   check (completed_at >= started_at),
-  check (length(summary_text_sha256) = 64)
+  check (length(summary_text_sha256) = 64),
+  check (jsonb_typeof(response_items) = 'array')
 );
+
+alter table timed_summaries
+add column if not exists response_items jsonb not null default '[]'::jsonb;
+
+alter table timed_summaries
+drop constraint if exists timed_summaries_response_items_check;
+
+alter table timed_summaries
+add constraint timed_summaries_response_items_check check (jsonb_typeof(response_items) = 'array');
 
 create table if not exists comprehension_responses (
   id uuid primary key default gen_random_uuid(),

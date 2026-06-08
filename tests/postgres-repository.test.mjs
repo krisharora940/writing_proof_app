@@ -36,11 +36,25 @@ function makeWords(count) {
 test("listStudentAssignmentsPostgres returns assigned work with latest session status", async () => {
   const client = createMockClient([
     { rows: [{
+      class_id: "class-1",
+      class_name: "English 101",
+      joined_at: new Date(1000),
+      assignment_count: 0,
+      submitted_count: 0
+    }] },
+    { rows: [{
       assignment_id: "assignment-1",
       title: "Essay 1",
       prompt: "Write a process reflection.",
       class_id: "class-1",
       class_name: "English 101",
+      comprehension_check_enabled: true,
+      comprehension_check_time_limit_minutes: 10,
+      comprehension_check_questions: JSON.stringify([
+        "What was the central claim or solution in your submission?",
+        "Which evidence, method, or steps did you use to support it?",
+        "What part of your submitted work would you revise first if you had more time?"
+      ]),
       due_at: new Date(5000),
       enrolled_at: new Date(1000),
       session_id: "session-1",
@@ -54,12 +68,28 @@ test("listStudentAssignmentsPostgres returns assigned work with latest session s
   const result = await listStudentAssignmentsPostgres(client, "student-1");
 
   assert.equal(result.ok, true);
+  assert.deepEqual(result.value.classes[0], {
+    id: "class-1",
+    name: "English 101",
+    joinedAt: 1000,
+    assignmentCount: 0,
+    submittedCount: 0
+  });
   assert.deepEqual(result.value.assignments[0], {
     id: "assignment-1",
     title: "Essay 1",
     prompt: "Write a process reflection.",
     classId: "class-1",
     className: "English 101",
+    comprehensionCheck: {
+      enabled: true,
+      timeLimitMinutes: 10,
+      questions: [
+        "What was the central claim or solution in your submission?",
+        "Which evidence, method, or steps did you use to support it?",
+        "What part of your submitted work would you revise first if you had more time?"
+      ]
+    },
     dueAt: 5000,
     enrolledAt: 1000,
     sessionId: "session-1",
@@ -68,8 +98,9 @@ test("listStudentAssignmentsPostgres returns assigned work with latest session s
     lockedAt: null,
     attemptNumber: 1
   });
-  assert.match(client.calls[0].sql, /from assignment_students/);
-  assert.match(client.calls[0].sql, /where assignment_students.student_id = \$1/);
+  assert.match(client.calls[0].sql, /classes\.kind = 'class'/);
+  assert.match(client.calls[1].sql, /from assignment_students/);
+  assert.match(client.calls[1].sql, /where assignment_students.student_id = \$1/);
 });
 
 test("getSessionMetricsPostgres loads authorized persisted metrics", async () => {
@@ -175,7 +206,14 @@ test("storeTimedSummaryPostgres inserts one hashed summary after submission", as
   const client = createMockClient([
     { rows: [{ id: "session-1", student_id: "student-1", submitted_at: 1000, locked_at: 1000 }] },
     { rows: [] },
-    { rows: [{ id: "summary-1", session_id: "session-1", started_at: new Date(2000), completed_at: new Date(3000), summary_text: "Summary" }] },
+    { rows: [{
+      id: "summary-1",
+      session_id: "session-1",
+      started_at: new Date(2000),
+      completed_at: new Date(3000),
+      summary_text: "Answer",
+      response_items: [{ question: "Prompt?", answer: "Answer" }]
+    }] },
     { rows: [] }
   ]);
 
@@ -184,15 +222,18 @@ test("storeTimedSummaryPostgres inserts one hashed summary after submission", as
     studentId: "student-1",
     startedAt: 2000,
     completedAt: 3000,
-    summaryText: "Summary"
+    summaryText: "Answer",
+    responses: [{ question: "Prompt?", answer: "Answer" }]
   });
 
   assert.equal(result.ok, true);
   assert.match(client.calls[2].sql, /insert into timed_summaries/);
-  assert.equal(client.calls[2].params[4].length, 64);
+  assert.equal(client.calls[2].params[4], JSON.stringify([{ question: "Prompt?", answer: "Answer" }]));
+  assert.equal(client.calls[2].params[5].length, 64);
   assert.match(client.calls[3].sql, /insert into comprehension_responses/);
   assert.equal(client.calls[3].params[1], "summary-1");
   assert.match(client.calls[4].sql, /status = 'summary_submitted'/);
+  assert.deepEqual(result.value.responses, [{ question: "Prompt?", answer: "Answer" }]);
 });
 
 test("storeTimedSummaryPostgres rejects duplicate summaries and invalid time ranges", async () => {
@@ -252,7 +293,11 @@ test("getProfessorReportPostgres loads observations and replay frames for owned 
       { captured_at: new Date(0), text: "" },
       { captured_at: new Date(2000), text: "Process evidence supports revision" }
     ] },
-    { rows: [{ summary_text: "Process evidence and revision were discussed." }] },
+    { rows: [{
+      summary_text: "Process evidence and revision were discussed.",
+      started_at: new Date(3000),
+      completed_at: new Date(123000)
+    }] },
     { rows: [] },
     { rows: [{ id: "report-1" }] },
     { rows: [] }
@@ -263,7 +308,10 @@ test("getProfessorReportPostgres loads observations and replay frames for owned 
   assert.equal(result.ok, true);
   assert.equal(result.value.submittedText, "Process evidence supports revision");
   assert.ok(result.value.observations.some((item) => item.group === "Comprehension Check"));
-  assert.ok(result.value.tags.some((item) => item.category === "Report Observation"));
+  assert.ok(result.value.tags.some((item) => item.category === "Process Development"));
+  assert.equal(result.value.processFeatures.finalWords, 4);
+  assert.equal(result.value.processFeatures.draftBuildCurve.at(-1).words, 4);
+  assert.equal(result.value.comprehensionFeatures.summaryLatencyMs, 120000);
   assert.equal(result.value.frames.length, 2);
   assert.match(client.calls[0].sql, /join assignment_instructors/);
   assert.match(client.calls[4].sql, /select observations/);
@@ -349,7 +397,11 @@ test("getProfessorReportPostgres reuses existing report observations without dup
       { captured_at: new Date(0), text: "" },
       { captured_at: new Date(2000), text: "Process evidence supports revision" }
     ] },
-    { rows: [{ summary_text: "Process evidence and revision were discussed." }] },
+    { rows: [{
+      summary_text: "Process evidence and revision were discussed.",
+      started_at: new Date(3000),
+      completed_at: new Date(123000)
+    }] },
     { rows: [{ observations: storedObservations }] }
   ]);
 
@@ -358,6 +410,8 @@ test("getProfessorReportPostgres reuses existing report observations without dup
   assert.equal(result.ok, true);
   assert.deepEqual(result.value.observations, storedObservations);
   assert.ok(result.value.tags.some((item) => item.label === "Stored summary coverage"));
+  assert.equal(result.value.processFeatures.finalWords, 4);
+  assert.equal(result.value.comprehensionFeatures.summaryLatencyMs, 120000);
   assert.equal(result.value.frames.length, 2);
   assert.equal(client.calls.length, 5);
   assert.match(client.calls[4].sql, /select observations/);
@@ -413,6 +467,13 @@ test("createProfessorAssignmentPostgres creates owned assignment with optional d
       title: "Essay 2",
       prompt: "Write a process reflection.",
       class_id: null,
+      comprehension_check_enabled: true,
+      comprehension_check_time_limit_minutes: 10,
+      comprehension_check_questions: JSON.stringify([
+        "What was the central claim or solution in your submission?",
+        "Which evidence, method, or steps did you use to support it?",
+        "What part of your submitted work would you revise first if you had more time?"
+      ]),
       due_at: new Date(5000),
       created_at: new Date(1000)
     }] },
@@ -432,7 +493,16 @@ test("createProfessorAssignmentPostgres creates owned assignment with optional d
   assert.equal(result.value.assignment.dueAt, 5000);
   assert.equal(client.calls[0].sql, "begin");
   assert.match(client.calls[1].sql, /insert into assignments/);
-  assert.deepEqual(client.calls[1].params, ["professor-1", "Essay 2", "Write a process reflection.", null, 5000]);
+  assert.deepEqual(client.calls[1].params, [
+    "professor-1",
+    "Essay 2",
+    "Write a process reflection.",
+    null,
+    true,
+    10,
+    "[\"What was the central claim or solution in your submission?\",\"Which evidence, method, or steps did you use to support it?\",\"What part of your submitted work would you revise first if you had more time?\"]",
+    5000
+  ]);
   assert.match(client.calls[2].sql, /insert into assignment_instructors/);
   assert.equal(client.calls[3].sql, "commit");
 });

@@ -32,7 +32,9 @@ import { getAppBaseUrl, normalizeEmail, sendTransactionalEmail } from "./auth.ts
 import { evaluateSummaryComparison, writeAiEvaluationLog } from "./ai-evaluation.ts";
 import {
   generateBehavioralRiskEvidenceTags,
+  generateComprehensionFeatureTags,
   generateObservationEvidenceTags,
+  generatePlanningSourceEvidenceTags,
   generateProcessEvidenceTags,
   generateSummaryEvidenceTags
 } from "./evidence-tags.ts";
@@ -40,6 +42,11 @@ import { createReportExport, type ReportExportFormat } from "./report-export.ts"
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import { buildReportProcessHighlights, type MutationResult, type StoredTimedSummary } from "./server-repository.ts";
 import { buildAuthorCheckSummary } from "./authorcheck-report.ts";
+import { extractProcessFeatures } from "./process-features.ts";
+import { extractComprehensionFeatures } from "./comprehension-features.ts";
+import { extractPlanningSourceFeatures } from "./planning-source-features.ts";
+import { normalizeComprehensionCheckSettings } from "./comprehension-check.ts";
+import { comprehensionAnswerText, normalizeComprehensionResponses, type ComprehensionResponseItem } from "./comprehension-response.ts";
 import type { ReplayFrame } from "./replay";
 import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
 import { calculateSessionMetrics, type Observation, type Snapshot, type WritingEvent } from "./writing-events.ts";
@@ -87,12 +94,16 @@ type SummaryRow = {
   started_at: Date | string;
   completed_at: Date | string;
   summary_text: string;
+  response_items: unknown;
 };
 
 type StudentSessionRow = {
   assignment_id: string;
   title: string;
   prompt: string;
+  comprehension_check_enabled: boolean;
+  comprehension_check_time_limit_minutes: number;
+  comprehension_check_questions: unknown;
   session_id: string;
   student_id: string;
   submitted_at: Date | string | null;
@@ -133,6 +144,9 @@ type ReportSnapshotRow = {
 
 type ReportSummaryRow = {
   summary_text: string;
+  response_items?: unknown;
+  started_at: Date | string | null;
+  completed_at: Date | string | null;
 };
 
 type ExistingReportRow = {
@@ -145,6 +159,9 @@ type AssignmentRow = {
   prompt: string;
   class_id: string | null;
   join_code: string | null;
+  comprehension_check_enabled: boolean;
+  comprehension_check_time_limit_minutes: number;
+  comprehension_check_questions: unknown;
   due_at: Date | string | null;
   created_at: Date | string;
 };
@@ -198,6 +215,9 @@ type StudentAssignmentRow = {
   prompt: string;
   class_id: string | null;
   class_name: string | null;
+  comprehension_check_enabled: boolean;
+  comprehension_check_time_limit_minutes: number;
+  comprehension_check_questions: unknown;
   due_at: Date | string | null;
   enrolled_at: Date | string;
   session_id: string | null;
@@ -207,10 +227,39 @@ type StudentAssignmentRow = {
   attempt_number: number | null;
 };
 
+type StudentClassRow = {
+  class_id: string;
+  class_name: string;
+  joined_at: Date | string;
+  assignment_count: number;
+  submitted_count: number;
+};
+
+
 export async function listStudentAssignmentsPostgres(
   client: QueryClient,
   studentId: string
 ): Promise<MutationResult<StudentAssignmentListResponse>> {
+  const classesResult = await client.query<StudentClassRow>(
+    `select
+       classes.id as class_id,
+       classes.title as class_name,
+       class_membership.created_at as joined_at,
+       count(assignments.id)::int as assignment_count,
+       count(writing_sessions.id)::int filter (where writing_sessions.submitted_at is not null)::int as submitted_count
+     from assignment_students as class_membership
+     join assignments as classes on classes.id = class_membership.assignment_id
+     left join assignments on assignments.class_id = classes.id and assignments.kind = 'assignment'
+     left join writing_sessions on writing_sessions.assignment_id = assignments.id
+       and writing_sessions.student_id = class_membership.student_id
+       and writing_sessions.status <> 'archived'
+     where class_membership.student_id = $1
+       and classes.kind = 'class'
+     group by classes.id, classes.title, class_membership.created_at
+     order by classes.created_at desc`,
+    [studentId]
+  );
+
   const result = await client.query<StudentAssignmentRow>(
     `select
        assignments.id as assignment_id,
@@ -218,6 +267,9 @@ export async function listStudentAssignmentsPostgres(
        assignments.prompt,
        assignments.class_id,
        class_assignments.title as class_name,
+       assignments.comprehension_check_enabled,
+       assignments.comprehension_check_time_limit_minutes,
+       assignments.comprehension_check_questions,
        assignments.due_at,
        assignment_students.created_at as enrolled_at,
        latest_session.id as session_id,
@@ -246,6 +298,13 @@ export async function listStudentAssignmentsPostgres(
   return {
     ok: true,
     value: {
+      classes: classesResult.rows.map((row) => ({
+        id: row.class_id,
+        name: row.class_name,
+        joinedAt: timeToMs(row.joined_at),
+        assignmentCount: Number(row.assignment_count),
+        submittedCount: Number(row.submitted_count)
+      })),
       assignments: result.rows.map((row) => ({
         id: row.assignment_id,
         title: row.title,
@@ -258,7 +317,12 @@ export async function listStudentAssignmentsPostgres(
         status: row.status,
         submittedAt: nullableTimeToMs(row.submitted_at),
         lockedAt: nullableTimeToMs(row.locked_at),
-        attemptNumber: row.attempt_number
+        attemptNumber: row.attempt_number,
+        comprehensionCheck: normalizeComprehensionCheckSettings({
+          enabled: row.comprehension_check_enabled,
+          timeLimitMinutes: row.comprehension_check_time_limit_minutes,
+          questions: parseComprehensionQuestions(row.comprehension_check_questions)
+        })
       }))
     }
   };
@@ -301,6 +365,9 @@ export async function getCurrentStudentSessionPostgres(
        assignments.id as assignment_id,
        assignments.title,
        assignments.prompt,
+       assignments.comprehension_check_enabled,
+       assignments.comprehension_check_time_limit_minutes,
+       assignments.comprehension_check_questions,
        writing_sessions.id as session_id,
        writing_sessions.student_id,
        writing_sessions.submitted_at,
@@ -344,7 +411,12 @@ export async function getCurrentStudentSessionPostgres(
       assignment: {
         id: row.assignment_id,
         title: row.title,
-        prompt: row.prompt
+        prompt: row.prompt,
+        comprehensionCheck: normalizeComprehensionCheckSettings({
+          enabled: row.comprehension_check_enabled,
+          timeLimitMinutes: row.comprehension_check_time_limit_minutes,
+          questions: parseComprehensionQuestions(row.comprehension_check_questions)
+        })
       },
       session: {
         id: row.session_id,
@@ -370,7 +442,16 @@ export async function listProfessorAssignmentsPostgres(
   professorId: string
 ): Promise<MutationResult<ProfessorAssignmentListResponse>> {
   const result = await client.query<AssignmentRow>(
-    `select assignments.id, assignments.title, assignments.prompt, assignments.class_id, assignments.due_at, assignments.created_at
+    `select
+       assignments.id,
+       assignments.title,
+       assignments.prompt,
+       assignments.class_id,
+       assignments.comprehension_check_enabled,
+       assignments.comprehension_check_time_limit_minutes,
+       assignments.comprehension_check_questions,
+       assignments.due_at,
+       assignments.created_at
      from assignments
      join assignment_instructors on assignment_instructors.assignment_id = assignments.id
      where assignment_instructors.professor_id = $1
@@ -387,6 +468,11 @@ export async function listProfessorAssignmentsPostgres(
         title: row.title,
         prompt: row.prompt,
         classId: row.class_id ?? null,
+        comprehensionCheck: normalizeComprehensionCheckSettings({
+          enabled: row.comprehension_check_enabled,
+          timeLimitMinutes: row.comprehension_check_time_limit_minutes,
+          questions: parseComprehensionQuestions(row.comprehension_check_questions)
+        }),
         dueAt: nullableTimeToMs(row.due_at),
         createdAt: timeToMs(row.created_at)
       }))
@@ -401,6 +487,7 @@ export async function createProfessorAssignmentPostgres(
 ): Promise<MutationResult<CreateProfessorAssignmentResponse>> {
   const title = body.title.trim();
   const prompt = body.prompt.trim();
+  const comprehensionCheck = normalizeComprehensionCheckSettings(body.comprehensionCheck);
   if (!title || !prompt) return { ok: false, status: 400, error: "Assignment title and prompt are required." };
   if (body.dueAt !== null && body.dueAt !== undefined && !Number.isFinite(body.dueAt)) {
     return { ok: false, status: 400, error: "Due date is invalid." };
@@ -417,10 +504,25 @@ export async function createProfessorAssignmentPostgres(
     }
 
     const assignmentResult = await client.query<AssignmentRow>(
-      `insert into assignments (professor_id, title, prompt, kind, class_id, due_at)
-       values ($1, $2, $3, 'assignment', $4, case when $5::double precision is null then null else to_timestamp($5 / 1000.0) end)
-       returning id, title, prompt, class_id, due_at, created_at`,
-      [professorId, title, prompt, body.classId ?? null, body.dueAt ?? null]
+      `insert into assignments (
+         professor_id, title, prompt, kind, class_id,
+         comprehension_check_enabled, comprehension_check_time_limit_minutes, comprehension_check_questions, due_at
+       )
+       values ($1, $2, $3, 'assignment', $4, $5, $6, $7::jsonb, case when $8::double precision is null then null else to_timestamp($8 / 1000.0) end)
+       returning
+         id, title, prompt, class_id,
+         comprehension_check_enabled, comprehension_check_time_limit_minutes, comprehension_check_questions,
+         due_at, created_at`,
+      [
+        professorId,
+        title,
+        prompt,
+        body.classId ?? null,
+        comprehensionCheck.enabled,
+        comprehensionCheck.timeLimitMinutes,
+        JSON.stringify(comprehensionCheck.questions),
+        body.dueAt ?? null
+      ]
     );
     const assignment = assignmentResult.rows[0];
     await client.query(
@@ -449,6 +551,11 @@ export async function createProfessorAssignmentPostgres(
           title: assignment.title,
           prompt: assignment.prompt,
           classId: assignment.class_id ?? null,
+          comprehensionCheck: normalizeComprehensionCheckSettings({
+            enabled: assignment.comprehension_check_enabled,
+            timeLimitMinutes: assignment.comprehension_check_time_limit_minutes,
+            questions: parseComprehensionQuestions(assignment.comprehension_check_questions)
+          }),
           dueAt: nullableTimeToMs(assignment.due_at),
           createdAt: timeToMs(assignment.created_at)
         }
@@ -1199,6 +1306,8 @@ async function storeTimedSummaryPostgresInTransaction(
   if (existingSummary.rows[0]) {
     return { ok: false, status: 409, error: "Timed summary cannot be stored for this session." };
   }
+  const responses = normalizeComprehensionResponses(request.responses);
+  const summaryText = comprehensionAnswerText(responses, request.summaryText);
 
   const insertResult = await client.query<SummaryRow>(
     `insert into timed_summaries (
@@ -1206,15 +1315,17 @@ async function storeTimedSummaryPostgresInTransaction(
       started_at,
       completed_at,
       summary_text,
+      response_items,
       summary_text_sha256
-    ) values ($1, to_timestamp($2 / 1000.0), to_timestamp($3 / 1000.0), $4, $5)
-    returning id, session_id, started_at, completed_at, summary_text`,
+    ) values ($1, to_timestamp($2 / 1000.0), to_timestamp($3 / 1000.0), $4, $5::jsonb, $6)
+    returning id, session_id, started_at, completed_at, summary_text, response_items`,
     [
       request.sessionId,
       request.startedAt,
       request.completedAt,
-      request.summaryText,
-      sha256(request.summaryText)
+      summaryText,
+      JSON.stringify(responses),
+      sha256(summaryText)
     ]
   );
 
@@ -1233,7 +1344,7 @@ async function storeTimedSummaryPostgresInTransaction(
       row.id,
       request.startedAt,
       request.completedAt,
-      sha256(request.summaryText)
+      sha256(responses.length ? JSON.stringify(responses) : summaryText)
     ]
   );
   await client.query(
@@ -1251,7 +1362,8 @@ async function storeTimedSummaryPostgresInTransaction(
       sessionId: row.session_id,
       startedAt: request.startedAt,
       completedAt: request.completedAt,
-      summaryText: row.summary_text
+      summaryText: row.summary_text,
+      responses: normalizeComprehensionResponses(row.response_items)
     }
   };
 }
@@ -1359,14 +1471,15 @@ export async function getSummaryComparisonPostgres(
     [sessionId]
   );
   const summaryResult = await client.query<ReportSummaryRow>(
-    `select timed_summaries.summary_text
+    `select timed_summaries.summary_text, timed_summaries.response_items
      from comprehension_responses
      join timed_summaries on timed_summaries.id = comprehension_responses.timed_summary_id
      where comprehension_responses.session_id = $1`,
     [sessionId]
   );
   const submittedText = submittedResult.rows[0]?.text || "";
-  const summaryText = summaryResult.rows[0]?.summary_text || "";
+  const summaryResponses = normalizeComprehensionResponses(summaryResult.rows[0]?.response_items);
+  const summaryText = comprehensionAnswerText(summaryResponses, summaryResult.rows[0]?.summary_text || "");
   if (!submittedText || !summaryText) {
     return { ok: false, status: 409, error: "Summary comparison is not ready." };
   }
@@ -1382,14 +1495,16 @@ export async function getProfessorReportPostgres(
   sessionId: string,
   professorId: string
 ): Promise<MutationResult<ProfessorReportResponse>> {
-  const access = await client.query<{ id: string }>(
-    `select writing_sessions.id
+  const access = await client.query<{ id: string; prompt?: string }>(
+    `select writing_sessions.id, assignments.prompt
      from writing_sessions
+     join assignments on assignments.id = writing_sessions.assignment_id
      join assignment_instructors on assignment_instructors.assignment_id = writing_sessions.assignment_id
      where writing_sessions.id = $1 and assignment_instructors.professor_id = $2`,
     [sessionId, professorId]
   );
   if (!access.rows[0]) return { ok: false, status: 404, error: "Report not found." };
+  const assignmentPrompt = access.rows[0].prompt || "";
 
   const eventsResult = await client.query<ReportEventRow>(
     `select
@@ -1420,14 +1535,17 @@ export async function getProfessorReportPostgres(
     [sessionId]
   );
   const summaryResult = await client.query<ReportSummaryRow>(
-    "select summary_text from timed_summaries where session_id = $1",
+    "select summary_text, response_items, started_at, completed_at from timed_summaries where session_id = $1",
     [sessionId]
   );
 
   const events = eventsResult.rows.map(mapEventRow);
   const snapshots = snapshotsResult.rows.map(mapSnapshotRow);
   const submittedText = snapshots.at(-1)?.text || "";
-  const summaryText = summaryResult.rows[0]?.summary_text || "";
+  const summaryResponses = normalizeComprehensionResponses(summaryResult.rows[0]?.response_items);
+  const summaryText = comprehensionAnswerText(summaryResponses, summaryResult.rows[0]?.summary_text || "");
+  const summaryStartedAt = nullableTimeToMs(summaryResult.rows[0]?.started_at || null);
+  const summaryCompletedAt = nullableTimeToMs(summaryResult.rows[0]?.completed_at || null);
   const frames = reconstructReplayForReport(snapshots, events);
   const behavioralRisk = submittedText ? analyzeBehavioralRisk(events, submittedText) : emptyBehavioralRiskForReport();
   const existingReportResult = await client.query<ExistingReportRow>(
@@ -1440,21 +1558,46 @@ export async function getProfessorReportPostgres(
   );
   const existingObservations = normalizeStoredObservations(existingReportResult.rows[0]?.observations);
   if (existingObservations) {
+    const comparison = compareSummaryToPaper(submittedText, summaryText);
     const existingTags = submittedText
       ? [
         ...generateProcessEvidenceTags(events, submittedText),
         ...generateBehavioralRiskEvidenceTags(behavioralRisk.signals),
-        ...(summaryText ? generateSummaryEvidenceTags(compareSummaryToPaper(submittedText, summaryText)) : []),
+        ...(summaryText ? generateSummaryEvidenceTags(comparison) : []),
         ...generateObservationEvidenceTags(existingObservations)
       ]
       : generateObservationEvidenceTags(existingObservations);
+    const processFeatures = extractProcessFeatures({
+      events,
+      submittedText,
+      submittedAt: snapshots.at(-1)?.at
+    });
+    const comprehensionFeatures = extractComprehensionFeatures({
+      submittedText,
+      summaryText,
+      comparison,
+      responses: summaryResponses,
+      startedAt: summaryStartedAt,
+      completedAt: summaryCompletedAt
+    });
+    existingTags.push(...generateComprehensionFeatureTags(comprehensionFeatures));
+    const planningSourceFeatures = extractPlanningSourceFeatures({
+      events,
+      submittedText,
+      promptText: assignmentPrompt,
+      submittedAt: snapshots.at(-1)?.at
+    });
+    existingTags.push(...generatePlanningSourceEvidenceTags(planningSourceFeatures));
     const highlights = buildReportProcessHighlights(events, frames, existingTags);
     const authorCheck = buildAuthorCheckSummary({
       events,
       submittedText,
       summaryText,
       behavioralRisk,
-      tags: existingTags
+      tags: existingTags,
+      processFeatures,
+      comprehensionFeatures,
+      planningSourceFeatures
     });
     return {
       ok: true,
@@ -1463,10 +1606,14 @@ export async function getProfessorReportPostgres(
         tags: existingTags,
         behavioralRisk,
         authorCheck,
+        processFeatures,
+        comprehensionFeatures,
+        planningSourceFeatures,
         frames,
         ...highlights,
         submittedText,
-        summaryText
+        summaryText,
+        comprehensionResponses: summaryResponses
       }
     };
   }
@@ -1481,22 +1628,48 @@ export async function getProfessorReportPostgres(
     ]
     : [];
   let audit = null;
+  let comparison = compareSummaryToPaper(submittedText, summaryText);
   if (submittedText && summaryText) {
     const evaluation = await evaluateSummaryComparison(sessionId, submittedText, summaryText);
-    observations.push(...comparisonToObservations(evaluation.comparison));
-    tags.push(...generateSummaryEvidenceTags(evaluation.comparison));
+    comparison = evaluation.comparison;
+    observations.push(...comparisonToObservations(comparison));
+    tags.push(...generateSummaryEvidenceTags(comparison));
     audit = evaluation.audit;
   }
   tags.push(...generateObservationEvidenceTags(observations));
   const reportId = await createProfessorReportPostgres(client, sessionId, professorId, observations, frames.length);
   if (audit) await writeAiEvaluationLog(client, sessionId, reportId, audit);
+  const processFeatures = extractProcessFeatures({
+    events,
+    submittedText,
+    submittedAt: snapshots.at(-1)?.at
+  });
+  const comprehensionFeatures = extractComprehensionFeatures({
+    submittedText,
+    summaryText,
+    comparison,
+    responses: summaryResponses,
+    startedAt: summaryStartedAt,
+    completedAt: summaryCompletedAt
+  });
+  tags.push(...generateComprehensionFeatureTags(comprehensionFeatures));
+  const planningSourceFeatures = extractPlanningSourceFeatures({
+    events,
+    submittedText,
+    promptText: assignmentPrompt,
+    submittedAt: snapshots.at(-1)?.at
+  });
+  tags.push(...generatePlanningSourceEvidenceTags(planningSourceFeatures));
   const highlights = buildReportProcessHighlights(events, frames, tags);
   const authorCheck = buildAuthorCheckSummary({
     events,
     submittedText,
     summaryText,
     behavioralRisk,
-    tags
+    tags,
+    processFeatures,
+    comprehensionFeatures,
+    planningSourceFeatures
   });
 
   return {
@@ -1506,10 +1679,14 @@ export async function getProfessorReportPostgres(
       tags,
       behavioralRisk,
       authorCheck,
+      processFeatures,
+      comprehensionFeatures,
+      planningSourceFeatures,
       frames,
       ...highlights,
       submittedText,
-      summaryText
+      summaryText,
+      comprehensionResponses: summaryResponses
     }
   };
 }
@@ -1588,7 +1765,6 @@ export async function saveProfessorGradePostgres(
 
 function emptyBehavioralRiskForReport() {
   return {
-    totalPoints: 0,
     highCount: 0,
     mediumCount: 0,
     positiveCount: 0,
@@ -1921,10 +2097,15 @@ function nullableTimeToMs(value: Date | string | null) {
   return value ? timeToMs(value) : null;
 }
 
+function parseComprehensionQuestions(value: unknown) {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
 function reconstructReplayForReport(snapshots: Snapshot[], events: WritingEvent[]) {
   const orderedSnapshots = [...snapshots].sort((a, b) => a.at - b.at);
   const orderedEvents = [...events].sort((a, b) => a.at - b.at);
-  const firstSnapshot = orderedSnapshots[0] || { at: Date.now(), text: "" };
+  const firstSnapshot = resolveReplayStartSnapshotForReport(orderedSnapshots, orderedEvents);
   let currentText = firstSnapshot.text;
 
   const frames: ReplayFrame[] = [{
@@ -1952,6 +2133,14 @@ function reconstructReplayForReport(snapshots: Snapshot[], events: WritingEvent[
   return frames;
 }
 
+function resolveReplayStartSnapshotForReport(snapshots: Snapshot[], events: WritingEvent[]) {
+  const firstEventAt = events[0]?.at ?? Date.now();
+  const lastEventAt = events.at(-1)?.at ?? Number.MAX_SAFE_INTEGER;
+  const nonFinalSnapshot = snapshots.find((snapshot) => snapshot.at < lastEventAt);
+  if (nonFinalSnapshot) return nonFinalSnapshot;
+  return { at: firstEventAt, text: "" };
+}
+
 function applyEventForReport(currentText: string, event: WritingEvent) {
   if (event.type === "submit") return currentText;
   if (typeof event.start !== "number") return currentText;
@@ -1977,6 +2166,7 @@ function describeEventForReport(event: WritingEvent) {
 }
 
 function analyzeProcessForReport(events: WritingEvent[], submittedText: string): Observation[] {
+  const reportableDeletionCharacters = 50;
   const observations: Observation[] = [];
   const activeMs = activeWritingMsForReport(events);
   const finalWords = countWordsForReport(submittedText);
@@ -2012,17 +2202,19 @@ function analyzeProcessForReport(events: WritingEvent[], submittedText: string):
 
   if (finalWords >= 150 && deleteEvents.length === 0) {
     observations.push({
-      group: "Major Event",
-      title: "No revision activity",
-      detail: "No deletions or text-removal revisions were recorded before submission."
+      group: "Context Event",
+      title: "No text-removal events recorded",
+      detail: "No deletion or text-removal events were recorded; this is inconclusive without other process indicators."
     });
   }
 
   deletionEvents.forEach((event) => {
+    const removedCharacters = event.removedCharacters || event.removed?.length || 0;
+    if (removedCharacters < reportableDeletionCharacters) return;
     observations.push({
       group: "Context Event",
       title: "Deletion event",
-      detail: `${event.removedCharacters || 0} characters were deleted at ${new Date(event.at).toLocaleTimeString()}.`
+      detail: `${removedCharacters} characters were deleted at ${new Date(event.at).toLocaleTimeString()}.`
     });
   });
 

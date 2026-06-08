@@ -5,6 +5,7 @@ import { storeTimedSummaryPostgres } from "@/lib/postgres-repository";
 import { enforceSameOrigin } from "@/lib/request-security";
 import { getDemoRepositoryState, storeTimedSummary } from "@/lib/server-repository";
 import type { TimedSummaryBody } from "@/lib/server-boundaries";
+import { normalizeComprehensionResponses } from "@/lib/comprehension-response";
 
 export async function POST(request: Request) {
   const blocked = enforceSameOrigin(request, { requireOrigin: true });
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
 
   const summaryRequest = {
     ...body,
+    responses: normalizeComprehensionResponses(body.responses),
     studentId: user.id
   };
   const result = hasDatabaseUrl()
@@ -39,6 +41,7 @@ function isTimedSummaryRequest(value: unknown): value is TimedSummaryBody {
     typeof body.sessionId === "string" &&
     typeof body.startedAt === "number" &&
     typeof body.completedAt === "number" &&
-    typeof body.summaryText === "string"
+    typeof body.summaryText === "string" &&
+    Array.isArray(body.responses)
   );
 }

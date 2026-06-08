@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { QueryClient } from "./postgres-repository.ts";
 import { compareSummaryToPaper, validateComparison, type SummaryComparison } from "./summary-comparison.ts";
 
-const SCHEMA_VERSION = "summary-comparison.v1";
+const SCHEMA_VERSION = "summary-comparison.v2";
 const FALLBACK_MODEL = "deterministic-keyword-overlap";
 
 export type EvaluationAudit = {
@@ -227,7 +227,7 @@ function buildPrompt() {
   return [
     "Compare a submitted paper to a student's timed summary.",
     "Return only JSON with an observations array.",
-    "Each observation must have category covered, partial, or missing; claim; and evidence.",
+    "Each observation must have category covered, partial, or missing; basis claim; claim; and evidence.",
     "Use neutral process-review wording. Do not mention AI generation, cheating, misconduct, plagiarism, suspicion, or scores.",
     "Limit to six observations."
   ].join(" ");

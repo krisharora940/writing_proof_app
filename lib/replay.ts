@@ -11,7 +11,7 @@ export type ReplayFrame = {
 export function reconstructReplay(snapshots: Snapshot[], events: WritingEvent[]): ReplayFrame[] {
   const orderedSnapshots = [...snapshots].sort((a, b) => a.at - b.at);
   const orderedEvents = [...events].sort((a, b) => a.at - b.at);
-  const firstSnapshot = orderedSnapshots[0] || { at: Date.now(), text: "" };
+  const firstSnapshot = resolveReplayStartSnapshot(orderedSnapshots, orderedEvents);
   let currentText = firstSnapshot.text;
 
   const frames: ReplayFrame[] = [
@@ -40,6 +40,13 @@ export function reconstructReplay(snapshots: Snapshot[], events: WritingEvent[])
   });
 
   return frames;
+}
+
+function resolveReplayStartSnapshot(snapshots: Snapshot[], events: WritingEvent[]) {
+  const firstEventAt = events[0]?.at ?? Date.now();
+  const nonFinalSnapshot = snapshots.find((snapshot) => snapshot.at < (events.at(-1)?.at ?? Number.MAX_SAFE_INTEGER));
+  if (nonFinalSnapshot) return nonFinalSnapshot;
+  return { at: firstEventAt, text: "" };
 }
 
 function applyEvent(currentText: string, event: WritingEvent) {

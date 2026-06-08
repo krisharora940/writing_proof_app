@@ -96,6 +96,6 @@ test("writeAiEvaluationLog stores schema metadata and hashes", async () => {
   assert.match(client.calls[0].sql, /insert into ai_evaluation_logs/);
   assert.equal(client.calls[0].params[0], "session-1");
   assert.equal(client.calls[0].params[1], "report-1");
-  assert.equal(client.calls[0].params[6], "summary-comparison.v1");
+  assert.equal(client.calls[0].params[6], "summary-comparison.v2");
   assert.equal(client.calls[0].params[9].length, 64);
 });

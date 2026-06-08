@@ -16,6 +16,7 @@ test("compareSummaryToPaper returns schema-shaped neutral observations", () => {
   assert.equal(comparison.fallbackUsed, true);
   assert.ok(comparison.observations.length >= 1);
   assert.ok(comparison.observations.every((item) => ["covered", "partial", "missing"].includes(item.category)));
+  assert.ok(comparison.observations.every((item) => ["keyword", "response-quality"].includes(item.basis)));
   assert.doesNotMatch(JSON.stringify(comparison).toLowerCase(), /misconduct|suspicion|score/);
 });
 
@@ -33,9 +34,19 @@ test("validateComparison removes malformed or non-neutral observations", () => {
   assert.deepEqual(comparison, {
     fallbackUsed: false,
     observations: [
-      { category: "covered", claim: "Key claims were present.", evidence: "process, review" }
+      { category: "covered", basis: "claim", claim: "Key claims were present.", evidence: "process, review" }
     ]
   });
+});
+
+test("fallback comparison does not label keyword or length heuristics as claims", () => {
+  const comparison = compareSummaryToPaper(
+    "Process evidence supports revision context and fair review.",
+    "Process evidence supports fair review."
+  );
+
+  assert.equal(comparison.fallbackUsed, true);
+  assert.equal(comparison.observations.some((item) => item.basis === "claim"), false);
 });
 
 test("comparisonToObservations maps validated output to report observations", () => {

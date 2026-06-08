@@ -66,6 +66,8 @@ test("schema separates mutable session state from immutable evidence", () => {
   assert.match(schema, /submission_snapshots_session_kind_idx/);
   assert.match(schema, /timed_summary_id uuid not null unique references timed_summaries/);
   assert.match(schema, /response_text_sha256 text not null/);
+  assert.match(schema, /response_items jsonb not null default '\[\]'::jsonb/);
+  assert.match(schema, /timed_summaries_response_items_check/);
 });
 
 test("schema supports authenticated identity and professor assignment access", () => {

@@ -1,4 +1,12 @@
 import { activeWritingMs, countWords, formatDuration, type Observation, type WritingEvent } from "./writing-events.ts";
+import {
+  extractProcessFeatures,
+  hasLargeUnrevisedNearSubmissionInsertion
+} from "./process-features.ts";
+
+const MEANINGFUL_TYPING_GAP_MS = 10_000;
+const MIN_MEANINGFUL_TYPED_CHARACTERS = 10;
+const TYPED_CHARACTERS_PER_WORD = 5;
 
 export type BehavioralSignalSeverity = "high" | "medium" | "positive";
 
@@ -9,20 +17,14 @@ export type BehavioralRiskSignal = {
   detail: string;
   eventId?: string;
   at?: number;
-  points: number;
 };
 
 export type BehavioralRiskSummary = {
-  totalPoints: number;
   highCount: number;
   mediumCount: number;
   positiveCount: number;
   signals: BehavioralRiskSignal[];
 };
-
-const HIGH_POINTS = 3;
-const MEDIUM_POINTS = 1;
-const POSITIVE_POINTS = -1;
 
 export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: string): BehavioralRiskSummary {
   const orderedEvents = [...events].sort((a, b) => a.at - b.at);
@@ -32,8 +34,8 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
   const lastEditAt = editEvents.at(-1)?.at ?? null;
   const elapsedMs = firstEditAt !== null && lastEditAt !== null ? Math.max(0, lastEditAt - firstEditAt) : 0;
   const activeMs = activeWritingMs(orderedEvents);
-  const deletionWords = orderedEvents.reduce((total, event) => total + (event.removedWords || 0), 0);
   const pasteEvents = orderedEvents.filter((event) => event.type === "paste");
+  const processFeatures = extractProcessFeatures({ events: orderedEvents, submittedText });
   const signals: BehavioralRiskSignal[] = [];
 
   pasteEvents.forEach((event) => {
@@ -77,38 +79,51 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
     }));
   }
 
-  if (finalWords >= 150) {
-    const deletionRate = deletionWords / finalWords;
-    if (deletionRate < 0.01) {
-      signals.push(signal({
-        id: "high-low-word-deletion-rate",
-        severity: "high",
-        label: "Low word-removal rate",
-        detail: `${deletionWords} removed words were recorded for ${finalWords} submitted words.`
-      }));
-    }
+  const minimalRevisionInteraction = finalWords >= 150 &&
+    processFeatures.revisionDepthScore <= 2 &&
+    hasLargeUnrevisedNearSubmissionInsertion(processFeatures);
+  if (minimalRevisionInteraction) {
+    signals.push(signal({
+      id: "high-minimal-revision-after-large-insertion",
+      severity: "high",
+      label: "Minimal revision after large insertion",
+      detail: `${processFeatures.revisedWordsEstimate} revised words were estimated after a large or heavily retained insertion.`
+    }));
   }
 
-  orderedEvents.forEach((event) => {
-    const removedWords = event.removedWords || countWords(event.removed || "");
-    if (removedWords >= 80) {
-      signals.push(signal({
-        id: `positive-large-deletion-${event.id}`,
-        severity: "positive",
-        label: "Large revision pass",
-        detail: `${removedWords} words were removed in one editing pass.`
-      }));
-      return;
-    }
-    if (removedWords >= 30) {
-      signals.push(signal({
-        id: `positive-medium-deletion-${event.id}`,
-        severity: "positive",
-        label: "Substantive revision",
-        detail: `${removedWords} words were removed during revision.`
-      }));
-    }
-  });
+  if (processFeatures.structuralRevisionCount > 0) {
+    signals.push(signal({
+      id: "positive-structural-revision",
+      severity: "positive",
+      label: "Structural revision activity",
+      detail: `${processFeatures.structuralRevisionCount} structural revision event${processFeatures.structuralRevisionCount === 1 ? "" : "s"} changed larger sections of the draft.`
+    }));
+  } else if (processFeatures.localRevisionCount >= 2) {
+    signals.push(signal({
+      id: "positive-local-revision",
+      severity: "positive",
+      label: "Meaningful local revision",
+      detail: `${processFeatures.localRevisionCount} local revision events changed words, phrases, or sentences.`
+    }));
+  }
+
+  if (processFeatures.revisedRegionCount >= 3) {
+    signals.push(signal({
+      id: "positive-multi-region-revision",
+      severity: "positive",
+      label: "Revision across document regions",
+      detail: `Revision activity was recorded across ${processFeatures.revisedRegionCount} document regions.`
+    }));
+  }
+
+  if (processFeatures.paragraphReorderCount > 0) {
+    signals.push(signal({
+      id: "positive-paragraph-reordering",
+      severity: "positive",
+      label: "Paragraph reordering",
+      detail: `${processFeatures.paragraphReorderCount} paragraph reorder pattern${processFeatures.paragraphReorderCount === 1 ? "" : "s"} was estimated.`
+    }));
+  }
 
   if (elapsedMs >= 60_000) {
     const activeRatio = activeMs / elapsedMs;
@@ -139,6 +154,15 @@ export function analyzeBehavioralRisk(events: WritingEvent[], submittedText: str
       severity: "positive",
       label: "Multi-session drafting",
       detail: `Recorded writing activity appears across ${sessionPattern.sessionCount} writing sessions with breaks up to ${formatDuration(sessionPattern.longestGapMs)}.`
+    }));
+  }
+
+  if (processFeatures.returnedToRevise) {
+    signals.push(signal({
+      id: "positive-returned-to-revise",
+      severity: "positive",
+      label: "Returned in a later session to revise",
+      detail: `${processFeatures.laterSessionRevisionCount} later writing session${processFeatures.laterSessionRevisionCount === 1 ? "" : "s"} included revision activity.`
     }));
   }
 
@@ -213,14 +237,12 @@ function signal(input: {
     label: input.label,
     detail: input.detail,
     eventId: input.event?.id,
-    at: input.event?.at,
-    points: input.severity === "high" ? HIGH_POINTS : input.severity === "medium" ? MEDIUM_POINTS : POSITIVE_POINTS
+    at: input.event?.at
   };
 }
 
 function summarize(signals: BehavioralRiskSignal[]): BehavioralRiskSummary {
   return {
-    totalPoints: Math.max(0, signals.reduce((total, item) => total + item.points, 0)),
     highCount: signals.filter((item) => item.severity === "high").length,
     mediumCount: signals.filter((item) => item.severity === "medium").length,
     positiveCount: signals.filter((item) => item.severity === "positive").length,
@@ -231,11 +253,17 @@ function summarize(signals: BehavioralRiskSignal[]): BehavioralRiskSummary {
 function findSustainedTypingSpeed(events: WritingEvent[]) {
   const typedEvents = events.filter((event) => event.type === "insert" && (event.addedWords || 0) > 0);
   for (let start = 0; start < typedEvents.length; start += 1) {
-    let words = 0;
+    let characters = 0;
+    let previous = typedEvents[start];
     for (let end = start; end < typedEvents.length; end += 1) {
-      words += typedEvents[end].addedWords || 0;
-      const durationMs = typedEvents[end].at - typedEvents[start].at;
+      const current = typedEvents[end];
+      if (end > start && current.at - previous.at > MEANINGFUL_TYPING_GAP_MS) break;
+      characters += addedCharacters(current);
+      previous = current;
+      const durationMs = current.at - typedEvents[start].at;
       if (durationMs >= 60_000) {
+        if (characters < MIN_MEANINGFUL_TYPED_CHARACTERS) continue;
+        const words = characters / TYPED_CHARACTERS_PER_WORD;
         const wpm = words / (durationMs / 60_000);
         if (wpm > 110) return { words, durationMs, wpm };
       }
@@ -246,10 +274,10 @@ function findSustainedTypingSpeed(events: WritingEvent[]) {
 
 function averageTypedWpm(events: WritingEvent[]) {
   const typedEvents = events.filter((event) => event.type === "insert");
-  const words = typedEvents.reduce((total, event) => total + (event.addedWords || 0), 0);
+  const characters = typedEvents.reduce((total, event) => total + addedCharacters(event), 0);
   const activeMs = typedEvents.reduce((total, event) => total + Math.min(event.durationSincePreviousMs || 0, 30_000), 0);
-  if (!words || activeMs < 60_000) return null;
-  return words / (activeMs / 60_000);
+  if (!characters || activeMs < 60_000 || characters < MIN_MEANINGFUL_TYPED_CHARACTERS) return null;
+  return (characters / TYPED_CHARACTERS_PER_WORD) / (activeMs / 60_000);
 }
 
 function hasPauseEditRetypePattern(events: WritingEvent[]) {
@@ -301,4 +329,10 @@ function detectDraftingSessions(events: WritingEvent[]) {
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function addedCharacters(event: WritingEvent) {
+  const explicit = (event.added || "").replace(/\s/g, "").length;
+  if (explicit > 0) return explicit;
+  return (event.addedWords || 0) * 5;
 }

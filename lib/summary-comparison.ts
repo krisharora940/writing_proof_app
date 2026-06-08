@@ -2,6 +2,7 @@ import type { Observation } from "./writing-events";
 
 export type ComparisonObservation = {
   category: "covered" | "partial" | "missing";
+  basis: "claim" | "keyword" | "response-quality";
   claim: string;
   evidence: string;
 };
@@ -21,7 +22,13 @@ export function validateComparison(value: unknown): SummaryComparison {
   const comparison = value as Partial<SummaryComparison>;
   if (!Array.isArray(comparison.observations)) return createEmptyComparison();
 
-  const observations = comparison.observations.filter(isComparisonObservation).slice(0, 6);
+  const observations = comparison.observations
+    .filter(isComparisonObservation)
+    .slice(0, 6)
+    .map((observation) => ({
+      ...observation,
+      basis: observation.basis || "claim"
+    }));
 
   return {
     observations,
@@ -46,7 +53,8 @@ function createFallbackComparison(submittedText: string, summaryText: string): S
     return {
       fallbackUsed: true,
       observations: [{
-        category: "missing",
+        category: "partial",
+        basis: "response-quality",
         claim: "No timed summary was submitted.",
         evidence: "The summary response was empty."
       }]
@@ -58,6 +66,7 @@ function createFallbackComparison(submittedText: string, summaryText: string): S
 
   observations.push({
     category: covered.length ? "covered" : "partial",
+    basis: "keyword",
     claim: `${covered.length} of ${paperKeywords.length} key paper terms appeared in the timed summary.`,
     evidence: covered.length ? covered.slice(0, 6).join(", ") : "No repeated key terms found."
   });
@@ -65,6 +74,7 @@ function createFallbackComparison(submittedText: string, summaryText: string): S
   if (missing.length) {
     observations.push({
       category: "missing",
+      basis: "keyword",
       claim: "Some frequent paper terms did not appear in the timed summary.",
       evidence: missing.join(", ")
     });
@@ -72,6 +82,7 @@ function createFallbackComparison(submittedText: string, summaryText: string): S
 
   observations.push({
     category: countWords(summaryText) >= 20 ? "covered" : "partial",
+    basis: "response-quality",
     claim: "Timed summary length was reviewed against the submitted paper.",
     evidence: `${countWords(summaryText)} summary words for ${countWords(submittedText)} submitted words.`
   });
@@ -105,8 +116,13 @@ function isComparisonObservation(value: unknown): value is ComparisonObservation
   if (!value || typeof value !== "object") return false;
   const observation = value as Partial<ComparisonObservation>;
 
+  const basisValid = observation.basis === undefined ||
+    observation.basis === "claim" ||
+    observation.basis === "keyword" ||
+    observation.basis === "response-quality";
   return (
     (observation.category === "covered" || observation.category === "partial" || observation.category === "missing") &&
+    basisValid &&
     typeof observation.claim === "string" &&
     typeof observation.evidence === "string" &&
     observation.claim.length > 0 &&

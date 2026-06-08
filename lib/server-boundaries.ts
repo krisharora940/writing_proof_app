@@ -7,6 +7,11 @@ import type { ReportExport } from "./report-export";
 import type { EvidenceTag } from "./evidence-tags";
 import type { BehavioralRiskSummary } from "./behavioral-risk";
 import type { AuthorCheckSummary } from "./authorcheck-report";
+import type { ProcessFeatures } from "./process-features";
+import type { PlanningSourceFeatures } from "./planning-source-features";
+import type { ComprehensionFeatures } from "./comprehension-features";
+import type { ComprehensionCheckSettings } from "./comprehension-check";
+import type { ComprehensionResponseItem } from "./comprehension-response";
 
 export type ApiBoundary = {
   method: "GET" | "POST" | "DELETE";
@@ -259,6 +264,7 @@ export type TimedSummaryRequest = {
   startedAt: number;
   completedAt: number;
   summaryText: string;
+  responses?: ComprehensionResponseItem[];
 };
 
 export type TimedSummaryBody = {
@@ -266,6 +272,7 @@ export type TimedSummaryBody = {
   startedAt: number;
   completedAt: number;
   summaryText: string;
+  responses: ComprehensionResponseItem[];
 };
 
 export type ReplayResponse = {
@@ -315,11 +322,15 @@ export type ProfessorReportResponse = {
   tags: EvidenceTag[];
   behavioralRisk: BehavioralRiskSummary;
   authorCheck: AuthorCheckSummary;
+  processFeatures: ProcessFeatures;
+  comprehensionFeatures: ComprehensionFeatures;
+  planningSourceFeatures: PlanningSourceFeatures;
   frames: ReplayFrame[];
   pasteEventCards: PasteEventCard[];
   timelineMarkers: ReportTimelineMarker[];
   submittedText: string;
   summaryText: string;
+  comprehensionResponses: ComprehensionResponseItem[];
 };
 
 export type ReportExportResponse = ReportExport;
@@ -329,6 +340,7 @@ export type StudentSessionResponse = {
     id: string;
     title: string;
     prompt: string;
+    comprehensionCheck: ComprehensionCheckSettings;
   };
   session: {
     id: string;
@@ -348,12 +360,20 @@ export type StudentSessionResponse = {
 };
 
 export type StudentAssignmentListResponse = {
+  classes: Array<{
+    id: string;
+    name: string;
+    joinedAt: number;
+    assignmentCount: number;
+    submittedCount: number;
+  }>;
   assignments: Array<{
     id: string;
     title: string;
     prompt: string;
     classId: string | null;
     className: string | null;
+    comprehensionCheck: ComprehensionCheckSettings;
     dueAt: number | null;
     enrolledAt: number;
     sessionId: string | null;
@@ -385,6 +405,7 @@ export type ProfessorAssignmentListResponse = {
     classId: string | null;
     dueAt: number | null;
     createdAt: number;
+    comprehensionCheck: ComprehensionCheckSettings;
   }>;
 };
 
@@ -403,6 +424,7 @@ export type CreateProfessorAssignmentBody = {
   prompt: string;
   classId?: string | null;
   dueAt?: number | null;
+  comprehensionCheck?: ComprehensionCheckSettings;
 };
 
 export type CreateProfessorAssignmentResponse = {

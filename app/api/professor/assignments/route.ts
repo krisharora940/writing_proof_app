@@ -42,11 +42,20 @@ export async function POST(request: Request) {
 function isCreateAssignmentBody(value: unknown): value is CreateProfessorAssignmentBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Partial<CreateProfessorAssignmentBody>;
+  const comprehensionCheck = body.comprehensionCheck as Partial<NonNullable<CreateProfessorAssignmentBody["comprehensionCheck"]>> | undefined;
 
   return (
     typeof body.title === "string" &&
     typeof body.prompt === "string" &&
     (body.classId === undefined || body.classId === null || typeof body.classId === "string") &&
-    (body.dueAt === undefined || body.dueAt === null || typeof body.dueAt === "number")
+    (body.dueAt === undefined || body.dueAt === null || typeof body.dueAt === "number") &&
+    (
+      comprehensionCheck === undefined || (
+        typeof comprehensionCheck === "object" &&
+        (comprehensionCheck.enabled === undefined || typeof comprehensionCheck.enabled === "boolean") &&
+        (comprehensionCheck.timeLimitMinutes === undefined || typeof comprehensionCheck.timeLimitMinutes === "number") &&
+        (comprehensionCheck.questions === undefined || (Array.isArray(comprehensionCheck.questions) && comprehensionCheck.questions.every((item) => typeof item === "string")))
+      )
+    )
   );
 }

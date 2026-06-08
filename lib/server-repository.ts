@@ -34,8 +34,13 @@ import { createReportExport, type ReportExportFormat } from "./report-export.ts"
 import { reconstructReplay } from "./replay.ts";
 import { compareSummaryToPaper, comparisonToObservations } from "./summary-comparison.ts";
 import { analyzeBehavioralRisk, behavioralSignalsToObservations } from "./behavioral-risk.ts";
-import { generateBehavioralRiskEvidenceTags, generateObservationEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
+import { generateBehavioralRiskEvidenceTags, generateComprehensionFeatureTags, generateObservationEvidenceTags, generatePlanningSourceEvidenceTags, generateProcessEvidenceTags, generateSummaryEvidenceTags } from "./evidence-tags.ts";
 import { buildAuthorCheckSummary } from "./authorcheck-report.ts";
+import { extractProcessFeatures } from "./process-features.ts";
+import { extractComprehensionFeatures } from "./comprehension-features.ts";
+import { extractPlanningSourceFeatures } from "./planning-source-features.ts";
+import { normalizeComprehensionCheckSettings } from "./comprehension-check.ts";
+import { comprehensionAnswerText, normalizeComprehensionResponses, type ComprehensionResponseItem } from "./comprehension-response.ts";
 import { analyzeProcess, calculateSessionMetrics, countWords } from "./writing-events.ts";
 import type { Snapshot, WritingEvent } from "./writing-events";
 import type { ReplayFrame } from "./replay";
@@ -56,6 +61,7 @@ export type StoredTimedSummary = {
   startedAt: number;
   completedAt: number;
   summaryText: string;
+  responses: ComprehensionResponseItem[];
 };
 
 export type DemoRepositoryState = {
@@ -207,6 +213,7 @@ export function createDemoRepositoryState(now = Date.now()): DemoRepositoryState
       title: "Process Evidence Reflection",
       prompt: "Write a short paper on whether process evidence is fairer than final-text AI detection.",
       classId: DEMO_ASSIGNMENT_ID,
+      comprehensionCheck: normalizeComprehensionCheckSettings(undefined),
       dueAt: null,
       createdAt: 0
     }],
@@ -320,7 +327,8 @@ export function storeTimedSummary(
     sessionId: request.sessionId,
     startedAt: request.startedAt,
     completedAt: request.completedAt,
-    summaryText: request.summaryText
+    summaryText: comprehensionAnswerText(request.responses, request.summaryText),
+    responses: normalizeComprehensionResponses(request.responses)
   };
 
   state.timedSummary = timedSummary;
@@ -340,13 +348,16 @@ export function getCurrentStudentSessionDemo(
     return { ok: false, status: 404, error: "No assignment found for this student." };
   }
 
+  const assignment = state.assignments.find((item) => item.id === state.session.assignmentId);
+
   return {
     ok: true,
     value: {
       assignment: {
-        id: DEMO_ASSIGNMENT_ID,
-        title: "Process Evidence Reflection",
-        prompt: "Write a short paper on whether process evidence is fairer than final-text AI detection."
+        id: assignment?.id || DEMO_ASSIGNMENT_ID,
+        title: assignment?.title || "Process Evidence Reflection",
+        prompt: assignment?.prompt || "Write a short paper on whether process evidence is fairer than final-text AI detection.",
+        comprehensionCheck: assignment?.comprehensionCheck || normalizeComprehensionCheckSettings(undefined)
       },
       session: {
         id: state.session.id,
@@ -378,6 +389,18 @@ export function listStudentAssignmentsDemo(
   return {
     ok: true,
     value: {
+      classes: state.classes
+        .filter((classroom) => state.roster.some((student) => student.studentId === studentId))
+        .map((classroom) => {
+          const classAssignments = state.assignments.filter((assignment) => assignment.classId === classroom.id);
+          return {
+            id: classroom.id,
+            name: classroom.name,
+            joinedAt: state.roster.find((student) => student.studentId === studentId)?.enrolledAt || 0,
+            assignmentCount: classAssignments.length,
+            submittedCount: classAssignments.filter((assignment) => assignment.id === state.session.assignmentId && state.session.submittedAt).length
+          };
+        }),
       assignments: state.assignments.map((assignment) => ({
         ...assignment,
         className: state.classes.find((classroom) => classroom.id === assignment.classId)?.name || null,
@@ -461,6 +484,7 @@ export function createProfessorAssignmentDemo(
 
   const title = body.title.trim();
   const prompt = body.prompt.trim();
+  const comprehensionCheck = normalizeComprehensionCheckSettings(body.comprehensionCheck);
   if (!title || !prompt) return { ok: false, status: 400, error: "Assignment title and prompt are required." };
 
   const assignment = {
@@ -468,6 +492,7 @@ export function createProfessorAssignmentDemo(
     title,
     prompt,
     classId: body.classId ?? state.classes[0]?.id ?? null,
+    comprehensionCheck,
     dueAt: typeof body.dueAt === "number" ? body.dueAt : null,
     createdAt: Date.now()
   };
@@ -689,6 +714,7 @@ export function getProfessorReportDemo(
     return { ok: false, status: 403, error: "Professor cannot access this report." };
   }
 
+  const assignmentPrompt = state.assignments.find((assignment) => assignment.id === state.session.assignmentId)?.prompt || "";
   const behavioralRisk = state.submittedText ? analyzeBehavioralRisk(state.events, state.submittedText) : emptyBehavioralRisk();
   const observations = state.submittedText
     ? [...analyzeProcess(state.events, state.submittedText), ...behavioralSignalsToObservations(behavioralRisk.signals)]
@@ -699,20 +725,45 @@ export function getProfessorReportDemo(
       ...generateBehavioralRiskEvidenceTags(behavioralRisk.signals)
     ]
     : [];
-  if (state.submittedText && state.timedSummary?.summaryText) {
-    const comparison = compareSummaryToPaper(state.submittedText, state.timedSummary.summaryText);
+  const summaryText = comprehensionAnswerText(state.timedSummary?.responses || [], state.timedSummary?.summaryText || "");
+  const comparison = compareSummaryToPaper(state.submittedText, summaryText);
+  if (state.submittedText && summaryText) {
     observations.push(...comparisonToObservations(comparison));
     tags.push(...generateSummaryEvidenceTags(comparison));
   }
   tags.push(...generateObservationEvidenceTags(observations));
   const frames = reconstructReplay(state.snapshots, state.events);
+  const processFeatures = extractProcessFeatures({
+    events: state.events,
+    submittedText: state.submittedText,
+    submittedAt: state.session.submittedAt
+  });
+  const comprehensionFeatures = extractComprehensionFeatures({
+    submittedText: state.submittedText,
+    summaryText,
+    comparison,
+    responses: state.timedSummary?.responses || [],
+    startedAt: state.timedSummary?.startedAt,
+    completedAt: state.timedSummary?.completedAt
+  });
+  const planningSourceFeatures = extractPlanningSourceFeatures({
+    events: state.events,
+    submittedText: state.submittedText,
+    promptText: assignmentPrompt,
+    submittedAt: state.session.submittedAt
+  });
+  tags.push(...generateComprehensionFeatureTags(comprehensionFeatures));
+  tags.push(...generatePlanningSourceEvidenceTags(planningSourceFeatures));
   const highlights = buildReportProcessHighlights(state.events, frames, tags);
   const authorCheck = buildAuthorCheckSummary({
     events: state.events,
     submittedText: state.submittedText,
-    summaryText: state.timedSummary?.summaryText || "",
+    summaryText,
     behavioralRisk,
-    tags
+    tags,
+    processFeatures,
+    comprehensionFeatures,
+    planningSourceFeatures
   });
 
   return {
@@ -722,17 +773,20 @@ export function getProfessorReportDemo(
       tags,
       behavioralRisk,
       authorCheck,
+      processFeatures,
+      comprehensionFeatures,
+      planningSourceFeatures,
       frames,
       ...highlights,
       submittedText: state.submittedText,
-      summaryText: state.timedSummary?.summaryText || ""
+      summaryText,
+      comprehensionResponses: state.timedSummary?.responses || []
     }
   };
 }
 
 function emptyBehavioralRisk() {
   return {
-    totalPoints: 0,
     highCount: 0,
     mediumCount: 0,
     positiveCount: 0,

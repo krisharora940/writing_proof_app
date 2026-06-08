@@ -1,3 +1,5 @@
+@import "quill/dist/quill.snow.css";
+
 :root {
   color-scheme: light;
   --bg: #f7f9fc;
@@ -1858,4 +1860,57 @@ textarea::placeholder {
     align-items: stretch;
     display: grid;
   }
+}
+
+.draftproof-editor .ql-toolbar {
+  border: 0;
+}
+
+.draftproof-editor .ql-container {
+  border: 0;
+  font-family: Arial, sans-serif;
+}
+
+.draftproof-editor .ql-editor {
+  min-height: 480px;
+  padding: 24px 32px;
+  font-size: 16px;
+  line-height: 1.7;
+  background: #fff;
+}
+
+.draftproof-editor .ql-editor.ql-blank::before {
+  left: 32px;
+  right: 32px;
+  color: #94a3b8;
+  font-style: normal;
+}
+
+.draftproof-editor .ql-editor ul,
+.draftproof-editor .ql-editor ol {
+  padding-left: 1.5em;
+}
+
+.draftproof-editor .ql-font-arial {
+  font-family: Arial, sans-serif;
+}
+
+.draftproof-editor .ql-font-times-new-roman {
+  font-family: "Times New Roman", serif;
+}
+
+.draftproof-editor .ql-font-verdana {
+  font-family: Verdana, sans-serif;
+}
+
+.draftproof-editor .ql-font-georgia {
+  font-family: Georgia, serif;
+}
+
+.draftproof-editor .ql-font-courier-new {
+  font-family: "Courier New", monospace;
+}
+
+.draftproof-editor .ql-font-sans-serif {
+  font-family: sans-serif;
 }

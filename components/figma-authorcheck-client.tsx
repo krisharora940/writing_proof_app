@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Autocomplete,
@@ -13,6 +14,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Collapse,
   Container,
   Dialog,
   DialogActions,
@@ -29,9 +31,14 @@ import {
   ListItem,
   ListItemIcon,
   ListItemText,
+  MenuItem,
   Paper,
   Radio,
   RadioGroup,
+  Slider,
+  Select,
+  TextField,
+  Switch,
   Tab,
   Table,
   TableBody,
@@ -40,7 +47,6 @@ import {
   TableHead,
   TableRow,
   Tabs,
-  TextField,
   Toolbar,
   Typography
 } from "@mui/material";
@@ -57,8 +63,14 @@ import {
   Comment,
   ContentCopy,
   Delete,
+  Edit,
   Email,
+  ExpandLess,
+  ExpandMore,
   Flag,
+  FormatAlignCenter,
+  FormatAlignLeft,
+  FormatAlignRight,
   FormatBold,
   FormatItalic,
   FormatListBulleted,
@@ -66,8 +78,10 @@ import {
   FormatUnderlined,
   LibraryBooks,
   MenuBook,
+  Pause,
   Person,
   PersonAdd,
+  PlayArrow,
   Quiz as QuizIcon,
   Save,
   School,
@@ -106,7 +120,28 @@ import type {
   StudentSessionResponse,
   TimedSummaryBody
 } from "@/lib/server-boundaries";
+import {
+  DEFAULT_COMPREHENSION_QUESTIONS,
+  DEFAULT_COMPREHENSION_TIME_LIMIT_MINUTES,
+  MAX_COMPREHENSION_TIME_LIMIT_MINUTES,
+  type ComprehensionCheckSettings
+} from "@/lib/comprehension-check";
 import type { AuthUser, UserRole } from "@/lib/persistence";
+
+const ReactQuill = dynamic(async () => {
+  const mod = await import("react-quill-new");
+  const quill = mod.Quill as {
+    import: (path: string) => { whitelist?: string[] };
+    register: (target: unknown, overwrite?: boolean) => void;
+  };
+  const SizeStyle = quill.import("attributors/style/size");
+  SizeStyle.whitelist = ["12px", "14px", "16px", "18px", "24px", "36px"];
+  quill.register(SizeStyle, true);
+  const FontClass = quill.import("formats/font");
+  FontClass.whitelist = ["arial", "times-new-roman", "verdana", "georgia", "courier-new", "sans-serif"];
+  quill.register(FontClass, true);
+  return mod.default;
+}, { ssr: false }) as any;
 
 type PageKind = "landing" | "login" | "signup" | "forgot-password" | "reset-password" | "student" | "assignment" | "quiz" | "instructor" | "class" | "review" | "templates" | "invite";
 type AccessState = "loading" | "authenticated" | "unauthenticated" | "forbidden" | "error";
@@ -129,12 +164,14 @@ type AuthorCheckAppProps = {
   sessionId?: string;
   invitationToken?: string;
   resetToken?: string;
+  comprehensionTimeLimitMinutes?: number;
+  comprehensionQuestions?: string[];
 };
 
 const studentBlue = "#1976d2";
 const instructorGreen = "#2e7d32";
 
-export function AuthorCheckApp({ page, role, assignmentId, sessionId, invitationToken, resetToken }: AuthorCheckAppProps) {
+export function AuthorCheckApp({ page, role, assignmentId, sessionId, invitationToken, resetToken, comprehensionTimeLimitMinutes, comprehensionQuestions }: AuthorCheckAppProps) {
   if (page === "landing") return <LandingPage />;
   if (page === "login") return <LoginPage role={role ?? "student"} />;
   if (page === "signup") return <SignupPage />;
@@ -147,7 +184,7 @@ export function AuthorCheckApp({ page, role, assignmentId, sessionId, invitation
       {(user) => {
         if (page === "student") return <StudentDashboard user={user} />;
         if (page === "assignment") return <AssignmentSubmission assignmentId={assignmentId} />;
-        if (page === "quiz") return <ComprehensionQuiz sessionId={sessionId} />;
+        if (page === "quiz") return <ComprehensionQuiz sessionId={sessionId} timeLimitMinutes={comprehensionTimeLimitMinutes} questions={comprehensionQuestions} />;
         if (page === "class") return <ClassManagement assignmentId={assignmentId} />;
         if (page === "review") return <InstructorReview sessionId={sessionId} />;
         if (page === "templates") return <AssignmentTemplates />;
@@ -853,6 +890,7 @@ function RequireRole({ role, children }: { role: UserRole; children: (user: Auth
 function StudentDashboard({ user }: { user: AuthUser }) {
   const router = useRouter();
   const [assignments, setAssignments] = useState<StudentAssignment[]>([]);
+  const [classes, setClasses] = useState<StudentAssignmentListResponse["classes"]>([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -862,7 +900,10 @@ function StudentDashboard({ user }: { user: AuthUser }) {
   const loadAssignments = useCallback(() => {
     setLoading(true);
     return loadJson<StudentAssignmentListResponse>("/api/assignments")
-      .then((data) => setAssignments(data.assignments))
+      .then((data) => {
+        setAssignments(data.assignments);
+        setClasses(data.classes);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -888,27 +929,6 @@ function StudentDashboard({ user }: { user: AuthUser }) {
   const datedAssignments = assignments.filter((assignment) => assignment.dueAt);
   const assignmentsForDate = (date: Date) => datedAssignments.filter((assignment) => isSameDay(new Date(assignment.dueAt || 0), date));
   const upcoming = [...assignments].sort((a, b) => (a.dueAt || Number.MAX_SAFE_INTEGER) - (b.dueAt || Number.MAX_SAFE_INTEGER)).slice(0, 4);
-  const classes = useMemo<StudentClass[]>(() => {
-    const grouped = new Map<string, StudentClass>();
-    assignments.forEach((assignment) => {
-      const classId = assignment.classId || assignment.id;
-      const className = assignment.className || assignment.title;
-      const existing = grouped.get(classId);
-      if (existing) {
-        existing.assignmentCount += 1;
-        if (assignment.submittedAt) existing.submittedCount += 1;
-        return;
-      }
-      grouped.set(classId, {
-        id: classId,
-        name: className,
-        assignmentCount: 1,
-        submittedCount: assignment.submittedAt ? 1 : 0
-      });
-    });
-    return [...grouped.values()];
-  }, [assignments]);
-
   return (
     <DashboardShell color="primary" title="DraftProof - Student Dashboard" user={user}>
       <Container maxWidth="xl" sx={{ py: 4 }}>
@@ -921,13 +941,11 @@ function StudentDashboard({ user }: { user: AuthUser }) {
               {loading ? <LinearProgress /> : (
                 <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2 }}>
                   {upcoming.slice(0, 2).map((assignment) => {
-                    const conflict = !!assignment.dueAt && assignmentsForDate(new Date(assignment.dueAt)).length > 1;
                     return (
-                      <Card key={assignment.id} sx={{ cursor: "pointer", border: conflict ? "2px solid #f44336" : "none", "&:hover": { transform: "translateY(-2px)", boxShadow: 3 } }} onClick={() => router.push(`/student/assignment/${assignment.id}`)}>
+                      <Card key={assignment.id} sx={{ cursor: "pointer", "&:hover": { transform: "translateY(-2px)", boxShadow: 3 } }} onClick={() => router.push(`/student/assignment/${assignment.id}`)}>
                         <CardContent>
                           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
                             <Chip label="DraftProof" size="small" color="primary" />
-                            {conflict && <Warning color="error" />}
                           </Box>
                           <Typography variant="h6" sx={{ mb: 1 }}>{assignment.title}</Typography>
                           <Typography variant="body2" color="text.secondary" sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -1027,19 +1045,20 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
   const [error, setError] = useState("");
   const lastTextRef = useRef("");
   const lastInputAtRef = useRef<number | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingEventsRef = useRef<Array<Omit<WritingEvent, "id">>>([]);
   const flushPromiseRef = useRef<Promise<void> | null>(null);
   const saveCycleMs = 15_000;
+  const plainTextContent = useMemo(() => editorHtmlToPlainText(content), [content]);
 
   useEffect(() => {
     const query = assignmentId ? `?assignmentId=${encodeURIComponent(assignmentId)}` : "";
     loadJson<StudentSessionResponse>(`/api/assignments/current${query}`)
       .then((data) => {
+        const initialText = data.paperText || data.submittedText || "";
         setSession(data);
-        setContent(data.paperText || data.submittedText || "");
+        setContent(plainTextToEditorHtml(initialText));
         setTitle(data.assignment.title);
-        lastTextRef.current = data.paperText || data.submittedText || "";
+        lastTextRef.current = initialText;
       })
       .catch((nextError) => setError(readError(nextError)));
   }, [assignmentId]);
@@ -1108,36 +1127,25 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
     setAutoSaveStatus("unsaved");
   }
 
-  function handleInput(event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
-    const nextContent = event.target.value;
-    setContent(nextContent);
-    setAutoSaveStatus("unsaved");
-    void recordChange(nextContent, (event.nativeEvent as InputEvent).inputType || "unknown");
-  }
-
-  function formatText(kind: string) {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selectedText = content.substring(start, end);
-    const wrapped = kind === "bold" ? `**${selectedText}**` : kind === "italic" ? `*${selectedText}*` : kind === "underline" ? `__${selectedText}__` : kind === "bullet" ? `\n- ${selectedText}` : `\n1. ${selectedText}`;
-    const nextContent = content.substring(0, start) + wrapped + content.substring(end);
-    setContent(nextContent);
-    void recordChange(nextContent, `format:${kind}`);
-  }
-
   async function confirmSubmission() {
     if (!session) return;
     const at = Date.now();
-    const snapshot: Snapshot = { at, text: content };
+    const snapshot: Snapshot = { at, text: plainTextContent };
+    const comprehensionCheck = session.assignment.comprehensionCheck;
     setError("");
     try {
       await flushPendingEvents();
-      await postJson("/api/submissions/lock", { sessionId: session.session.id, submittedText: content, snapshot } satisfies LockSubmissionBody);
+      await postJson("/api/submissions/lock", { sessionId: session.session.id, submittedText: plainTextContent, snapshot } satisfies LockSubmissionBody);
       setShowReviewDialog(false);
       setShowConfirmDialog(true);
-      setTimeout(() => router.push(`/student/quiz/${session.session.id}`), 1200);
+      if (comprehensionCheck.enabled) {
+        const params = new URLSearchParams();
+        params.set("minutes", String(comprehensionCheck.timeLimitMinutes));
+        comprehensionCheck.questions.forEach((question) => params.append("question", question));
+        setTimeout(() => router.push(`/student/quiz/${session.session.id}?${params.toString()}`), 1200);
+      } else {
+        setTimeout(() => router.push("/student"), 1200);
+      }
     } catch (nextError) {
       setError(readError(nextError));
     }
@@ -1155,7 +1163,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
             <Typography variant="caption">DraftProof writing workspace</Typography>
           </Box>
           <Chip icon={autoSaveStatus === "saved" ? <CheckCircle /> : <Save />} label={autoSaveStatus === "saved" ? "Saved" : autoSaveStatus === "saving" ? "Saving..." : "Unsaved"} color={autoSaveStatus === "saved" ? "success" : "default"} sx={{ mr: 2 }} />
-          <Typography variant="body2">{countWords(content)} words | {content.length} characters</Typography>
+          <Typography variant="body2">{countWords(plainTextContent)} words | {plainTextContent.length} characters</Typography>
         </Toolbar>
       </AppBar>
 
@@ -1172,20 +1180,22 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
         <Paper sx={{ p: 3 }}>
           <Typography variant="h5" sx={{ mb: 3 }}>Your Submission</Typography>
           <TextField fullWidth label="Submission Title" value={title} onChange={(event) => setTitle(event.target.value)} sx={{ mb: 3 }} />
-          <Box sx={{ mb: 2, display: "flex", gap: 1, flexWrap: "wrap", bgcolor: "#f5f5f5", p: 1, borderRadius: 1 }}>
-            <IconButton size="small" onClick={() => formatText("bold")} title="Bold"><FormatBold /></IconButton>
-            <IconButton size="small" onClick={() => formatText("italic")} title="Italic"><FormatItalic /></IconButton>
-            <IconButton size="small" onClick={() => formatText("underline")} title="Underline"><FormatUnderlined /></IconButton>
-            <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
-            <IconButton size="small" onClick={() => formatText("bullet")} title="Bullet List"><FormatListBulleted /></IconButton>
-            <IconButton size="small" onClick={() => formatText("number")} title="Numbered List"><FormatListNumbered /></IconButton>
-            <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+          <WritingRichTextEditor
+            value={content}
+            disabled={!!session?.session.lockedAt}
+            onChange={(nextHtml, nextPlainText, inputType) => {
+              setContent(nextHtml);
+              if (inputType === "sync") return;
+              setAutoSaveStatus("unsaved");
+              void recordChange(nextPlainText, inputType);
+            }}
+          />
+          <Box sx={{ mt: 2, mb: 3 }}>
             <Button component="label" startIcon={<Upload />} size="small" variant="outlined">
               Attach Files
               <input type="file" hidden multiple onChange={(event) => setAttachments([...attachments, ...Array.from(event.target.files || [])])} />
             </Button>
           </Box>
-          <TextField fullWidth multiline rows={15} placeholder="Start typing your answer here..." value={content} onChange={handleInput} inputRef={textareaRef} sx={{ mb: 3, fontFamily: "monospace" }} disabled={!!session?.session.lockedAt} />
           {attachments.length > 0 && (
             <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
               <Typography variant="subtitle2" sx={{ mb: 2 }}>Attachments ({attachments.length})</Typography>
@@ -1199,7 +1209,7 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
           )}
           <Box sx={{ display: "flex", gap: 2, justifyContent: "flex-end" }}>
             <Button variant="outlined" onClick={() => router.push("/student")}>Save Draft</Button>
-            <Button variant="contained" onClick={() => setShowReviewDialog(true)} disabled={!content.trim() || !!session?.session.lockedAt}>Submit Assignment</Button>
+            <Button variant="contained" onClick={() => setShowReviewDialog(true)} disabled={!plainTextContent.trim() || !!session?.session.lockedAt}>Submit Assignment</Button>
           </Box>
         </Paper>
       </Container>
@@ -1211,9 +1221,11 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
           <Typography variant="h6" sx={{ mb: 1 }}>Title</Typography>
           <Typography sx={{ mb: 3, p: 2, bgcolor: "#f5f5f5", borderRadius: 1 }}>{title}</Typography>
           <Typography variant="h6" sx={{ mb: 1 }}>Content</Typography>
-          <Paper variant="outlined" sx={{ p: 2, mb: 3, maxHeight: 300, overflow: "auto", whiteSpace: "pre-wrap" }}>{content}</Paper>
-          <Typography variant="body2">Words: {countWords(content)}</Typography>
-          <Typography variant="body2">Characters: {content.length}</Typography>
+          <Paper variant="outlined" sx={{ p: 2, mb: 3, maxHeight: 300, overflow: "auto" }}>
+            <Box dangerouslySetInnerHTML={{ __html: content }} />
+          </Paper>
+          <Typography variant="body2">Words: {countWords(plainTextContent)}</Typography>
+          <Typography variant="body2">Characters: {plainTextContent.length}</Typography>
           <Typography variant="body2">Attachments: {attachments.length}</Typography>
         </DialogContent>
         <DialogActions>
@@ -1226,7 +1238,11 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
         <DialogContent sx={{ textAlign: "center", py: 4 }}>
           <CheckCircle sx={{ fontSize: 80, color: "#4caf50", mb: 2 }} />
           <Typography variant="h5" sx={{ mb: 2 }}>Submission Successful</Typography>
-          <Typography color="text.secondary">Your assignment was submitted. The comprehension check opens next.</Typography>
+          <Typography color="text.secondary">
+            {session?.assignment.comprehensionCheck.enabled
+              ? "Your assignment was submitted. The comprehension check opens next."
+              : "Your assignment was submitted successfully."}
+          </Typography>
           <LinearProgress sx={{ mt: 3 }} />
         </DialogContent>
       </Dialog>
@@ -1234,30 +1250,62 @@ function AssignmentSubmission({ assignmentId }: { assignmentId?: string }) {
   );
 }
 
-function ComprehensionQuiz({ sessionId }: { sessionId?: string }) {
+function ComprehensionQuiz({
+  sessionId,
+  timeLimitMinutes = DEFAULT_COMPREHENSION_TIME_LIMIT_MINUTES,
+  questions = [...DEFAULT_COMPREHENSION_QUESTIONS]
+}: {
+  sessionId?: string;
+  timeLimitMinutes?: number;
+  questions?: string[];
+}) {
   const router = useRouter();
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [showResults, setShowResults] = useState(false);
   const [error, setError] = useState("");
+  const [remainingSeconds, setRemainingSeconds] = useState(timeLimitMinutes * 60);
+  const finishedRef = useRef(false);
   const startedAtRef = useRef(Date.now());
-  const questions = [
-    "What was the central claim or solution in your submission?",
-    "Which evidence, method, or steps did you use to support it?",
-    "What part of your submitted work would you revise first if you had more time?"
-  ];
+  const activeQuestions = useMemo(() => questions.slice(0, 3), [questions]);
 
   async function finishQuiz() {
-    if (!sessionId) return;
-    const summaryText = questions.map((question, index) => `${question}\n${answers[index] || "No response."}`).join("\n\n");
+    if (!sessionId || finishedRef.current) return;
+    finishedRef.current = true;
+    const responses = activeQuestions.map((question, index) => ({
+      question,
+      answer: answers[index]?.trim() || ""
+    }));
+    const summaryText = responses.map((response) => response.answer).filter(Boolean).join("\n\n");
     try {
-      await postJson("/api/timed-summaries", { sessionId, startedAt: startedAtRef.current, completedAt: Date.now(), summaryText } satisfies TimedSummaryBody);
+      await postJson("/api/timed-summaries", {
+        sessionId,
+        startedAt: startedAtRef.current,
+        completedAt: Date.now(),
+        summaryText,
+        responses
+      } satisfies TimedSummaryBody);
       setShowResults(true);
     } catch (nextError) {
       setError(readError(nextError));
       setShowResults(true);
     }
   }
+
+  useEffect(() => {
+    if (showResults) return;
+    const timer = window.setInterval(() => {
+      setRemainingSeconds((current) => {
+        if (current <= 1) {
+          window.clearInterval(timer);
+          void finishQuiz();
+          return 0;
+        }
+        return current - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeQuestions, answers, sessionId, showResults]);
 
   if (showResults) {
     return (
@@ -1277,17 +1325,17 @@ function ComprehensionQuiz({ sessionId }: { sessionId?: string }) {
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#f5f5f5" }}>
-      <AppBar position="static" elevation={0}><Toolbar><QuizIcon sx={{ mr: 2 }} /><Box sx={{ flexGrow: 1 }}><Typography variant="h6">Comprehension Check</Typography><Typography variant="caption">Question {currentQuestion + 1} of {questions.length}</Typography></Box></Toolbar></AppBar>
-      <LinearProgress variant="determinate" value={((currentQuestion + 1) / questions.length) * 100} />
+      <AppBar position="static" elevation={0}><Toolbar><QuizIcon sx={{ mr: 2 }} /><Box sx={{ flexGrow: 1 }}><Typography variant="h6">Comprehension Check</Typography><Typography variant="caption">Question {currentQuestion + 1} of {activeQuestions.length} · {timeLimitMinutes} minute limit</Typography></Box><Chip label={`${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, "0")}`} color={remainingSeconds <= 60 ? "warning" : "default"} /></Toolbar></AppBar>
+      <LinearProgress variant="determinate" value={((currentQuestion + 1) / activeQuestions.length) * 100} />
       <Container maxWidth="md" sx={{ py: 4 }}>
         <Alert severity="info" sx={{ mb: 3 }}>Answer from memory based on the work you just submitted.</Alert>
         <Paper sx={{ p: 4 }}>
           <Typography variant="h5" sx={{ mb: 3 }}>Question {currentQuestion + 1}</Typography>
-          <TextField fullWidth multiline minRows={6} label={questions[currentQuestion]} value={answers[currentQuestion] || ""} onChange={(event) => setAnswers({ ...answers, [currentQuestion]: event.target.value })} />
+          <TextField fullWidth multiline minRows={6} label={activeQuestions[currentQuestion]} value={answers[currentQuestion] || ""} onChange={(event) => setAnswers({ ...answers, [currentQuestion]: event.target.value })} />
           <Box sx={{ display: "flex", justifyContent: "space-between", mt: 4 }}>
             <Button variant="outlined" onClick={() => setCurrentQuestion(currentQuestion - 1)} disabled={currentQuestion === 0}>Previous</Button>
-            <Button variant="contained" onClick={() => currentQuestion === questions.length - 1 ? void finishQuiz() : setCurrentQuestion(currentQuestion + 1)} disabled={!answers[currentQuestion]?.trim()}>
-              {currentQuestion === questions.length - 1 ? "Finish Check" : "Next Question"}
+            <Button variant="contained" onClick={() => currentQuestion === activeQuestions.length - 1 ? void finishQuiz() : setCurrentQuestion(currentQuestion + 1)} disabled={!answers[currentQuestion]?.trim()}>
+              {currentQuestion === activeQuestions.length - 1 ? "Finish Check" : "Next Question"}
             </Button>
           </Box>
         </Paper>
@@ -1359,7 +1407,7 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
   const visibleSubmissions = selectedTab === 0
     ? submissions.filter((submission) => submission.submittedAt && !submission.gradedAt)
     : selectedTab === 2
-      ? submissions.filter((submission) => submission.sessionId && reports[submission.sessionId]?.authorCheck.flag !== "green")
+      ? submissions.filter((submission) => submission.sessionId && reports[submission.sessionId]?.authorCheck.assessmentLabel === "Review Recommended")
       : submissions;
 
   useEffect(() => {
@@ -1402,13 +1450,12 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
             <Tabs value={selectedTab} onChange={(_, value) => setSelectedTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
               <Tab icon={<Flag />} label="Pending Reviews" iconPosition="start" />
               <Tab icon={<CheckCircle />} label="All Submissions" iconPosition="start" />
-              <Tab icon={<Warning />} label="Flagged Submissions" iconPosition="start" />
+              <Tab icon={<Warning />} label="Review Recommended" iconPosition="start" />
             </Tabs>
             <Box sx={{ p: 3 }}>
               <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3, gap: 2, flexWrap: "wrap" }}>
                 <Box>
-                  <Typography variant="h5">{selectedAssignment?.title || selectedClass?.name || "Submissions Requiring Review"}</Typography>
-                  {selectedClass && <Typography variant="body2" color="text.secondary">{selectedClass.name} assignments</Typography>}
+                  <Typography variant="h5">{selectedClass?.name || "Submissions Requiring Review"}</Typography>
                 </Box>
                 <Chip label={`${visibleSubmissions.length} shown`} color="primary" />
               </Box>
@@ -1431,20 +1478,27 @@ function InstructorDashboard({ user }: { user: AuthUser }) {
                 ) : (
                   <Typography variant="body2" color="text.secondary">No assignments have been created for this class.</Typography>
                 )}
+                {selectedAssignment && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.75 }}>{selectedAssignment.title}</Typography>
+                    <Typography variant="body2" color="text.secondary">{selectedAssignment.prompt}</Typography>
+                  </Box>
+                )}
               </Box>
               <TableContainer>
                 <Table>
-                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>DraftProof</TableCell><TableCell>Process</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
+                  <TableHead><TableRow><TableCell>Student</TableCell><TableCell>Status</TableCell><TableCell>Submitted</TableCell><TableCell>Assessment</TableCell><TableCell>Support</TableCell><TableCell>Atypicality</TableCell><TableCell>Action</TableCell></TableRow></TableHead>
                   <TableBody>
                     {visibleSubmissions.map((submission) => {
                       const report = submission.sessionId ? reports[submission.sessionId] : null;
                       return (
-                        <TableRow key={submission.studentId} sx={{ bgcolor: report?.authorCheck.flag === "red" ? "#ffebee" : "white" }}>
+                        <TableRow key={submission.studentId} sx={{ bgcolor: report?.authorCheck.assessmentLabel === "Review Recommended" ? "#fff7ed" : "white" }}>
                           <TableCell><Box sx={{ display: "flex", alignItems: "center", gap: 1 }}><Avatar sx={{ width: 32, height: 32 }}>{submission.studentName[0]}</Avatar>{submission.studentName}</Box></TableCell>
                           <TableCell>{statusLabel(submission.status)}</TableCell>
                           <TableCell>{submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : "Not submitted"}</TableCell>
-                          <TableCell>{report ? <FlagChip flag={report.authorCheck.flag} label={report.authorCheck.flagLabel} /> : <Chip label="Pending" size="small" />}</TableCell>
-                          <TableCell>{report ? <ProcessIndicatorBar value={report.authorCheck.similarityPercent} /> : "..."}</TableCell>
+                          <TableCell>{report ? <AssessmentChip label={report.authorCheck.assessmentLabel} /> : <Chip label="Pending" size="small" />}</TableCell>
+                          <TableCell>{report ? <ProcessIndicatorBar value={report.authorCheck.processSupportScore} tone="support" /> : "..."}</TableCell>
+                          <TableCell>{report ? <ProcessIndicatorBar value={report.authorCheck.processAtypicalityScore} tone="atypicality" /> : "..."}</TableCell>
                           <TableCell>
                             <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                               {submission.gradedAt && <Chip label={`Graded ${submission.gradePercent}%`} color="success" size="small" />}
@@ -1521,6 +1575,10 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
   const [savedGrade, setSavedGrade] = useState<number | null>(null);
   const [gradeSaving, setGradeSaving] = useState(false);
   const [error, setError] = useState("");
+  const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
+  const [replaySpeed, setReplaySpeed] = useState<1 | 2 | 4>(1);
+  const [showPlayback, setShowPlayback] = useState(true);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -1529,8 +1587,29 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
       .catch((nextError) => setError(readError(nextError)));
   }, [sessionId]);
 
+  useEffect(() => {
+    setCurrentFrameIndex(0);
+    setIsReplayPlaying(false);
+  }, [report?.frames.length]);
+
+  useEffect(() => {
+    if (!report?.frames.length || !isReplayPlaying) return;
+    if (currentFrameIndex >= report.frames.length - 1) {
+      setIsReplayPlaying(false);
+      return;
+    }
+    const currentFrame = report.frames[currentFrameIndex];
+    const nextFrame = report.frames[currentFrameIndex + 1];
+    const actualDelayMs = Math.max(0, nextFrame.at - currentFrame.at);
+    const timer = window.setTimeout(() => {
+      setCurrentFrameIndex((current) => Math.min(current + 1, report.frames.length - 1));
+    }, replayDelayMs(actualDelayMs, replaySpeed));
+    return () => window.clearTimeout(timer);
+  }, [currentFrameIndex, isReplayPlaying, replaySpeed, report?.frames.length]);
+
   const lines = (report?.submittedText || "").split("\n");
   const gradeChanged = savedGrade !== null && savedGrade !== gradePercent;
+  const replayFrame = report?.frames[currentFrameIndex] || null;
 
   async function saveGrade() {
     if (!sessionId) return;
@@ -1559,7 +1638,7 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
             <Typography variant="h6">Submission Review</Typography>
             <Typography variant="caption">DraftProof report and grading workspace</Typography>
           </Box>
-          {report && <FlagChip flag={report.authorCheck.flag} label={report.authorCheck.flagLabel} />}
+          {report && <AssessmentChip label={report.authorCheck.assessmentLabel} />}
         </Toolbar>
       </AppBar>
 
@@ -1576,6 +1655,81 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
                 <Alert severity={report.summaryText ? "info" : "warning"} sx={{ mb: 2 }}>
                   {report.summaryText ? "Timed comprehension response is available in the right panel." : "Timed comprehension response has not been submitted."}
                 </Alert>
+                <Card sx={{ mb: 3, bgcolor: "#f8fafc", border: "1px solid #e2e8f0" }}>
+                  <CardContent>
+                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 2, mb: 2, flexWrap: "wrap" }}>
+                      <Typography variant="subtitle1">Writing Playback</Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                        <Chip
+                          size="small"
+                          label={replayFrame ? `${currentFrameIndex + 1} / ${report.frames.length} · ${replayFrame.label}` : "No replay data"}
+                        />
+                        <Button
+                          size="small"
+                          variant="text"
+                          endIcon={showPlayback ? <ExpandLess /> : <ExpandMore />}
+                          onClick={() => setShowPlayback((current) => !current)}
+                        >
+                          {showPlayback ? "Hide" : "Show"}
+                        </Button>
+                      </Box>
+                    </Box>
+                    <Collapse in={showPlayback}>
+                      <Box sx={{ display: "flex", gap: 1, alignItems: "center", mb: 2, flexWrap: "wrap" }}>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          startIcon={isReplayPlaying ? <Pause /> : <PlayArrow />}
+                          onClick={() => setIsReplayPlaying((current) => !current)}
+                          disabled={!report.frames.length}
+                        >
+                          {isReplayPlaying ? "Pause" : "Play"}
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => {
+                            setIsReplayPlaying(false);
+                            setCurrentFrameIndex(0);
+                          }}
+                          disabled={!report.frames.length}
+                        >
+                          Restart
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => setReplaySpeed((current) => current === 1 ? 2 : current === 2 ? 4 : 1)}
+                          disabled={!report.frames.length}
+                        >
+                          {replaySpeed}x
+                        </Button>
+                        <Typography variant="caption" color="text.secondary">
+                          {replayFrame ? formatReplayFrameTime(replayFrame.at) : ""}
+                        </Typography>
+                      </Box>
+                      <Slider
+                        value={Math.min(currentFrameIndex, Math.max(0, report.frames.length - 1))}
+                        min={0}
+                        max={Math.max(0, report.frames.length - 1)}
+                        step={1}
+                        onChange={(_, value) => {
+                          setIsReplayPlaying(false);
+                          setCurrentFrameIndex(Array.isArray(value) ? value[0] : value);
+                        }}
+                        sx={{ mb: 2 }}
+                      />
+                      <Paper variant="outlined" sx={{ p: 2, minHeight: 180, maxHeight: 280, overflow: "auto", bgcolor: "#fff" }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                          {replayFrame?.label || "Draft started"}
+                        </Typography>
+                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace", lineHeight: 1.7 }}>
+                          {replayFrame?.text || ""}
+                        </Typography>
+                      </Paper>
+                    </Collapse>
+                  </CardContent>
+                </Card>
                 <Box sx={{ fontFamily: "monospace", fontSize: "0.9rem", lineHeight: 1.8 }}>
                   {lines.map((line, index) => {
                     const lineComments = comments.filter((comment) => comment.lineNumber === index);
@@ -1595,14 +1749,211 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
 
               <Paper sx={{ p: 3, height: "70vh", overflow: "auto" }}>
                 <Typography variant="h6" sx={{ mb: 3 }}>DraftProof System Report</Typography>
-                <Card sx={{ mb: 3, bgcolor: report.authorCheck.flag === "red" ? "#ffebee" : report.authorCheck.flag === "yellow" ? "#fff3e0" : "#e8f5e9" }}>
+                <Card sx={{ mb: 3, bgcolor: assessmentBackground(report.authorCheck.assessmentLabel) }}>
                   <CardContent>
                     <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-                      <Typography variant="h6">Process Indicators</Typography>
-                      <Typography variant="h4" color={flagColor(report.authorCheck.flag)}>{report.authorCheck.similarityPercent}%</Typography>
+                      <Typography variant="h6">{report.authorCheck.assessmentLabel}</Typography>
+                      <Chip label={`${report.authorCheck.confidence} confidence · ${report.authorCheck.confidenceScore}% data quality`} size="small" />
                     </Box>
-                    <LinearProgress variant="determinate" value={report.authorCheck.similarityPercent} sx={{ height: 10, borderRadius: 5, mb: 2, "& .MuiLinearProgress-bar": { bgcolor: flagColor(report.authorCheck.flag) } }} />
-                    <Typography variant="body2">{report.authorCheck.flagDetail}</Typography>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2, mb: 2 }}>
+                      <ScoreCard label="Process Support" value={report.authorCheck.processSupportScore} color="#2e7d32" />
+                      <ScoreCard label="Process Atypicality" value={report.authorCheck.processAtypicalityScore} color="#d97706" />
+                    </Box>
+                    <Typography variant="body2">{report.authorCheck.assessmentDetail}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                      {report.authorCheck.confidenceReasons.join(" ")}
+                    </Typography>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2 }}>Score Dimension Breakdown</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 3 }}>
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>Process Support</Typography>
+                        {supportDimensionDefinitions.map((dimension) => (
+                          <DimensionScoreRow
+                            key={dimension.key}
+                            label={dimension.label}
+                            value={report.authorCheck.supportScores[dimension.key]}
+                            max={dimension.max}
+                            color="#2e7d32"
+                          />
+                        ))}
+                      </Box>
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ mb: 1.5 }}>Process Atypicality</Typography>
+                        {atypicalityDimensionDefinitions.map((dimension) => (
+                          <DimensionScoreRow
+                            key={dimension.key}
+                            label={dimension.label}
+                            value={report.authorCheck.atypicalityScores[dimension.key]}
+                            max={dimension.max}
+                            color="#d97706"
+                          />
+                        ))}
+                      </Box>
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2 }}>Assessment Reasons</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gap: 1 }}>
+                      {report.authorCheck.reasons.map((reason) => (
+                        <Alert
+                          key={reason.id}
+                          severity={reason.disposition === "review" ? "warning" : reason.disposition === "supportive" ? "success" : "info"}
+                        >
+                          <strong>{reason.label}:</strong> {reason.detail}
+                        </Alert>
+                      ))}
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}><TrendingUp /> Draft Build Curve</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 1, alignItems: "end", minHeight: 150 }}>
+                      {report.processFeatures.draftBuildCurve.map((point) => {
+                        const height = report.processFeatures.finalWords
+                          ? Math.max(6, Math.round((point.words / report.processFeatures.finalWords) * 100))
+                          : 6;
+                        return (
+                          <Box key={point.elapsedPercent} sx={{ textAlign: "center" }}>
+                            <Typography variant="caption" sx={{ fontWeight: 600 }}>{point.words}</Typography>
+                            <Box sx={{ height: 100, display: "flex", alignItems: "flex-end", my: 0.5 }}>
+                              <Box sx={{ width: "100%", height: `${height}%`, minHeight: 6, bgcolor: "#1976d2", borderRadius: "4px 4px 0 0" }} />
+                            </Box>
+                            <Typography variant="caption" color="text.secondary">{point.elapsedPercent}%</Typography>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                    <Divider sx={{ my: 2 }} />
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 2 }}>
+                      <Metric label="Total duration" value={formatMetricDuration(report.processFeatures.totalDurationMs)} />
+                      <Metric label="Active writing" value={formatMetricDuration(report.processFeatures.activeDurationMs)} />
+                      <Metric label="Largest insertion" value={`${report.processFeatures.largestInsertionWords} words`} />
+                      <Metric label="Overall pace" value={`${report.processFeatures.overallWpm} WPM`} />
+                      <Metric label="Active typed pace" value={`${report.processFeatures.activeWpm} WPM`} />
+                      <Metric label="15-second burst pace" value={`${report.processFeatures.burstWpm} WPM`} />
+                      <Metric label="1-minute rolling pace" value={`${report.processFeatures.maxRollingOneMinuteWpm} WPM`} />
+                      <Metric label="2-minute rolling pace" value={`${report.processFeatures.maxRollingTwoMinuteWpm} WPM`} />
+                      <Metric label="Insertion to submit" value={formatMetricDuration(report.processFeatures.timeFromLargestInsertionToSubmitMs)} />
+                      <Metric label="Draft complete to submit" value={formatMetricDuration(report.processFeatures.timeFromCompleteDraftToSubmitMs)} />
+                      <Metric label="Immediate submit after complete draft" value={report.processFeatures.immediateSubmissionAfterCompleteDraft ? "Observed" : "Not observed"} />
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2 }}>Pause and Session Structure</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" }, gap: 2 }}>
+                      <Metric label="Pauses over 30s" value={String(report.processFeatures.pauseCountOver30Seconds)} />
+                      <Metric label="Pauses over 2m" value={String(report.processFeatures.pauseCountOverTwoMinutes)} />
+                      <Metric label="Median pause" value={formatMetricDuration(report.processFeatures.medianPauseMs)} />
+                      <Metric label="Longest pause" value={formatMetricDuration(report.processFeatures.longestIdleGapMs)} />
+                      <Metric label="Before largest insertion" value={formatMetricDuration(report.processFeatures.pauseBeforeLargestInsertionMs)} />
+                      <Metric label="After largest insertion" value={formatMetricDuration(report.processFeatures.pauseAfterLargestInsertionMs)} />
+                      <Metric label="Meaningful sessions" value={String(report.processFeatures.meaningfulSessionCount)} />
+                      <Metric label="Later-session revisions" value={String(report.processFeatures.laterSessionRevisionCount)} />
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2 }}>Final Contribution</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      Estimates use recorded event offsets and text overlap. Typed and pasted estimates partition final words; revised and unrevised estimates partition retained pasted words. Deleted estimates identify the recorded origin of removed words.
+                    </Alert>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" }, gap: 2 }}>
+                      <Metric label="Typed final estimate" value={`${report.processFeatures.typedFinalWordsEstimate} words`} />
+                      <Metric label="Pasted final estimate" value={`${report.processFeatures.pastedFinalWordsEstimate} words`} />
+                      <Metric label="Revised pasted estimate" value={`${report.processFeatures.revisedPastedFinalWordsEstimate} words`} />
+                      <Metric label="Unrevised pasted estimate" value={`${report.processFeatures.unrevisedPastedFinalWordsEstimate} words`} />
+                      <Metric label="Deleted typed estimate" value={`${report.processFeatures.deletedTypedWordsEstimate} words`} />
+                      <Metric label="Deleted pasted estimate" value={`${report.processFeatures.deletedPastedWordsEstimate} words`} />
+                      <Metric label="Typed final share" value={`${Math.round(report.processFeatures.typedFinalRatio * 100)}%`} />
+                      <Metric label="Pasted final share" value={`${Math.round(report.processFeatures.pastedFinalRatio * 100)}%`} />
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2 }}>Source and Planning Process</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" }, gap: 2 }}>
+                      <Metric label="Citation additions" value={String(report.planningSourceFeatures.citationInsertionCount)} />
+                      <Metric label="Citation removals" value={String(report.planningSourceFeatures.citationRemovalCount)} />
+                      <Metric label="Citation replacements" value={String(report.planningSourceFeatures.citationReplacementCount)} />
+                      <Metric label="First citation timing" value={report.planningSourceFeatures.firstCitationElapsedPercent === null ? "Not observed" : `${report.planningSourceFeatures.firstCitationElapsedPercent}% elapsed`} />
+                      <Metric label="Citation-only pastes" value={String(report.planningSourceFeatures.citationOnlyPasteCount)} />
+                      <Metric label="Pastes containing citations" value={String(report.planningSourceFeatures.citationPasteCount)} />
+                      <Metric label="Prose pastes" value={String(report.planningSourceFeatures.prosePasteCount)} />
+                      <Metric label="Revisions after citation" value={String(report.planningSourceFeatures.sourceRevisionAfterCitationCount)} />
+                      <Metric label="Source integration" value={report.planningSourceFeatures.sourceIntegrationObserved ? "Observed" : "Not established"} />
+                      <Metric label="Early outline" value={report.planningSourceFeatures.outlinePhaseDetected ? "Observed" : "Not observed"} />
+                      <Metric label="Outline expansions" value={String(report.planningSourceFeatures.outlineExpansionCount)} />
+                      <Metric label="Heading-first pattern" value={report.planningSourceFeatures.headingFirstDetected ? "Observed" : "Not observed"} />
+                      <Metric label="Heading evolution" value={String(report.planningSourceFeatures.headingEvolutionCount)} />
+                      <Metric label="Thesis revisions" value={String(report.planningSourceFeatures.thesisRevisionCount)} />
+                      <Metric label="Draft expansion" value={report.planningSourceFeatures.draftExpansionPattern ? "Observed" : "Not observed"} />
+                      <Metric label="Prompt uptake in final" value={`${Math.round(report.planningSourceFeatures.promptTermUptakeRatio * 100)}%`} />
+                      <Metric label="Early prompt uptake" value={`${Math.round(report.planningSourceFeatures.earlyPromptTermUptakeRatio * 100)}%`} />
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}><Edit /> Revision Depth</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", mb: 1 }}>
+                      <Typography variant="subtitle2">Revision depth score</Typography>
+                      <Typography variant="h5" color="primary">{report.processFeatures.revisionDepthScore}/20</Typography>
+                    </Box>
+                    <LinearProgress variant="determinate" value={report.processFeatures.revisionDepthScore * 5} sx={{ height: 8, borderRadius: 4, mb: 2 }} />
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" }, gap: 2 }}>
+                      <Metric label="Surface edits" value={String(report.processFeatures.surfaceRevisionCount)} />
+                      <Metric label="Local revisions" value={String(report.processFeatures.localRevisionCount)} />
+                      <Metric label="Structural revisions" value={String(report.processFeatures.structuralRevisionCount)} />
+                      <Metric label="Revised words" value={String(report.processFeatures.revisedWordsEstimate)} />
+                      <Metric label="Replacements" value={String(report.processFeatures.replacementEventCount)} />
+                      <Metric label="Sentence-level" value={String(report.processFeatures.sentenceLevelRevisionCount)} />
+                      <Metric label="Large deletions" value={String(report.processFeatures.largeDeletionCount)} />
+                      <Metric label="Revision density" value={`${Math.round(report.processFeatures.revisionDensity * 100)}%`} />
+                      <Metric label="Paragraph reorders" value={String(report.processFeatures.paragraphReorderCount)} />
+                      <Metric label="Revised regions" value={String(report.processFeatures.revisedRegionCount)} />
+                    </Box>
+                  </CardContent>
+                </Card>
+
+                <Typography variant="subtitle1" sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}><QuizIcon /> Comprehension Alignment</Typography>
+                <Card sx={{ mb: 3 }}>
+                  <CardContent>
+                    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(4, 1fr)" }, gap: 2 }}>
+                      <Metric label="Claim coverage" value={report.comprehensionFeatures.claimAssessmentAvailable ? `${Math.round(report.comprehensionFeatures.claimCoverageRatio * 100)}%` : "Not assessed"} />
+                      <Metric label="Specificity" value={`${report.comprehensionFeatures.specificityScore}%`} />
+                      <Metric label="Genericness" value={`${report.comprehensionFeatures.genericnessScore}%`} />
+                      <Metric label="Essay overlap" value={`${Math.round(report.comprehensionFeatures.overlapWithEssay * 100)}%`} />
+                      <Metric label="Summary length" value={`${report.comprehensionFeatures.summaryLength} words`} />
+                      <Metric label="Response time" value={formatMetricDuration(report.comprehensionFeatures.summaryLatencyMs)} />
+                      <Metric label="Prompts answered" value={report.comprehensionFeatures.responseCount ? `${report.comprehensionFeatures.answeredResponseCount}/${report.comprehensionFeatures.responseCount}` : "Legacy response"} />
+                      <Metric label="Average answer" value={report.comprehensionFeatures.responseCount ? `${report.comprehensionFeatures.averageAnswerWords} words` : "Not available"} />
+                      <Metric label="Missing claims" value={String(report.comprehensionFeatures.majorClaimMissingCount)} />
+                      <Metric label="Independent wording" value={report.comprehensionFeatures.independentWordingObserved ? "Observed" : "Not established"} />
+                    </Box>
+                    {!report.comprehensionFeatures.summarySubmitted && (
+                      <Alert severity="info" sx={{ mt: 2 }}>No timed response is available; no negative inference is drawn.</Alert>
+                    )}
+                    {report.comprehensionFeatures.summarySubmitted && !report.comprehensionFeatures.claimAssessmentAvailable && (
+                      <Alert severity="info" sx={{ mt: 2 }}>Keyword fallback was used. It is not treated as claim-level coverage or omission evidence.</Alert>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -1610,7 +1961,13 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
                 {report.authorCheck.sourceHighlights.length ? report.authorCheck.sourceHighlights.map((source) => (
                   <Card key={source.id} sx={{ mb: 2 }}>
                     <CardContent>
-                      <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}><Typography variant="subtitle2">{source.label}</Typography><Chip label={`${source.similarityPercent}%`} size="small" color="warning" /></Box>
+                      <Box sx={{ display: "flex", justifyContent: "space-between", gap: 1, mb: 1 }}>
+                        <Typography variant="subtitle2">{source.label}</Typography>
+                        <Box sx={{ display: "flex", gap: 0.75 }}>
+                          <Chip label={`${source.finalContributionPercent}% of final`} size="small" color="warning" />
+                          <Chip label={`${source.retentionPercent}% retained`} size="small" variant="outlined" />
+                        </Box>
+                      </Box>
                       <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>{source.excerpt}</Typography>
                       <Typography variant="caption" color="text.secondary">{source.detail}</Typography>
                     </CardContent>
@@ -1624,28 +1981,73 @@ function InstructorReview({ sessionId }: { sessionId?: string }) {
                   </Alert>
                 ))}
 
+                <Typography variant="subtitle1" sx={{ mt: 3, mb: 2 }}>Evidence Classification</Typography>
+                <Box sx={{ display: "grid", gap: 1 }}>
+                  {report.tags.map((tag) => (
+                    <Alert
+                      key={tag.id}
+                      severity={tag.disposition === "review" ? "warning" : tag.disposition === "supportive" ? "success" : "info"}
+                    >
+                      <strong>{tag.category} · {tag.disposition}:</strong> {tag.label}. {tag.detail}
+                    </Alert>
+                  ))}
+                </Box>
+
                 <Typography variant="subtitle1" sx={{ mt: 3, mb: 1 }}>Comprehension Summary</Typography>
-                <Paper variant="outlined" sx={{ p: 2, whiteSpace: "pre-wrap" }}>{report.summaryText || "No timed response stored."}</Paper>
+                {report.comprehensionResponses.length ? (
+                  <Box sx={{ display: "grid", gap: 2 }}>
+                    {report.comprehensionResponses.map((response, index) => (
+                      <Box key={`${index}-${response.question}`} sx={{ display: "grid", gap: 1 }}>
+                        <Typography variant="subtitle2" sx={{ color: "text.secondary" }}>
+                          Q. {response.question}
+                        </Typography>
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: 2,
+                            bgcolor: "#fff",
+                            borderColor: "divider",
+                            borderRadius: 1.5,
+                            boxShadow: "0 1px 2px rgba(15, 23, 42, 0.06)"
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: "pre-wrap",
+                              lineHeight: 1.7,
+                              color: "text.primary"
+                            }}
+                          >
+                            {response.answer || "No response recorded before the timed check ended."}
+                          </Typography>
+                        </Paper>
+                      </Box>
+                    ))}
+                  </Box>
+                ) : (
+                  <Paper variant="outlined" sx={{ p: 2, whiteSpace: "pre-wrap" }}>{report.summaryText || "No timed response stored."}</Paper>
+                )}
               </Paper>
             </Box>
 
             <Paper sx={{ p: 3, mt: 2 }}>
-              <Typography variant="h6" sx={{ mb: 2 }}>Final Grade</Typography>
               {savedGrade !== null && (
                 <Alert severity={gradeChanged ? "info" : "success"} sx={{ mb: 2 }}>
                   {gradeChanged ? "Grade changed. Save again to update it." : `Grade saved at ${savedGrade}%.`}
                 </Alert>
               )}
-              <TextField
-                label="Grade"
-                type="number"
-                value={gradePercent}
-                onChange={(event) => setGradePercent(Math.max(0, Math.min(100, Number(event.target.value))))}
-                slotProps={{ htmlInput: { min: 0, max: 100 } }}
-                sx={{ maxWidth: 220 }}
-              />
-              <Box sx={{ display: "flex", gap: 2, alignItems: "center", mt: 3, flexWrap: "wrap" }}>
-                <TextField label={selectedLine === null ? "Select a line to comment" : `Comment on line ${selectedLine + 1}`} value={newComment} onChange={(event) => setNewComment(event.target.value)} sx={{ flexGrow: 1 }} disabled={selectedLine === null} />
+              <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
+                <Typography variant="h6" sx={{ whiteSpace: "nowrap", mr: 1 }}>Final Grade</Typography>
+                <TextField
+                  label="Grade"
+                  type="number"
+                  value={gradePercent}
+                  onChange={(event) => setGradePercent(Math.max(0, Math.min(100, Number(event.target.value))))}
+                  slotProps={{ htmlInput: { min: 0, max: 100 } }}
+                  sx={{ width: 140 }}
+                />
+                <TextField label={selectedLine === null ? "Select a line to comment" : `Comment on line ${selectedLine + 1}`} value={newComment} onChange={(event) => setNewComment(event.target.value)} sx={{ flex: "1 1 320px" }} disabled={selectedLine === null} />
                 <Button variant="outlined" disabled={selectedLine === null || !newComment.trim()} onClick={() => { if (selectedLine !== null) setComments([...comments, { lineNumber: selectedLine, text: newComment }]); setNewComment(""); }}>Add Comment</Button>
                 <Button variant="contained" color="success" disabled={gradeSaving} onClick={saveGrade}>{savedGrade === gradePercent ? "Saved" : "Save Grade"}: {Number.isNaN(gradePercent) ? 0 : gradePercent}%</Button>
               </Box>
@@ -1889,7 +2291,23 @@ function AssignmentTemplates() {
   const [form, setForm] = useState({ title: "", prompt: "", dueAt: "" });
   const [classes, setClasses] = useState<ProfessorClass[]>([]);
   const [selectedClassId, setSelectedClassId] = useState(searchParams.get("classId") || "");
+  const [comprehensionCheck, setComprehensionCheck] = useState<ComprehensionCheckSettings>({
+    enabled: true,
+    timeLimitMinutes: DEFAULT_COMPREHENSION_TIME_LIMIT_MINUTES,
+    questions: [...DEFAULT_COMPREHENSION_QUESTIONS]
+  });
   const [error, setError] = useState("");
+  const centeredInputSx = {
+    "& .MuiOutlinedInput-root": {
+      minHeight: 56
+    },
+    "& .MuiOutlinedInput-input": {
+      boxSizing: "border-box",
+      height: "100%",
+      paddingTop: "16.5px",
+      paddingBottom: "16.5px"
+    }
+  };
   const templates = [
     ["Research Paper", "Write a sourced research paper with a clear thesis, evidence, and revision notes."],
     ["Lab Report", "Document hypothesis, method, observations, analysis, and conclusion."],
@@ -1915,7 +2333,8 @@ function AssignmentTemplates() {
       title,
       prompt,
       classId: selectedClassId,
-      dueAt: form.dueAt ? new Date(`${form.dueAt}T23:59:00`).getTime() : null
+      dueAt: form.dueAt ? new Date(`${form.dueAt}T23:59:00`).getTime() : null,
+      comprehensionCheck
     });
     router.push("/professor");
   }
@@ -1928,25 +2347,61 @@ function AssignmentTemplates() {
         <Paper sx={{ p: 3, mb: 3 }}>
           <Typography variant="h5" sx={{ mb: 2 }}>Create Custom Assignment</Typography>
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 2fr 180px auto" }, gap: 2 }}>
-            <TextField label="Assignment title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-            <TextField label="Writing prompt" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} />
+            <TextField label="Assignment title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} sx={centeredInputSx} />
+            <TextField label="Writing prompt" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} sx={centeredInputSx} />
             <TextField type="date" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} />
             <Button variant="contained" color="success" onClick={() => createAssignment(form.title, form.prompt)} disabled={!form.title || !form.prompt || !selectedClassId}>Create Assignment</Button>
           </Box>
         </Paper>
         <Paper sx={{ p: 3, mb: 3 }}>
           <Typography variant="h6" sx={{ mb: 2 }}>Assign to Class</Typography>
-          <TextField
-            select
-            fullWidth
-            label="Class"
-            value={selectedClassId}
-            onChange={(event) => setSelectedClassId(event.target.value)}
-            slotProps={{ select: { native: true } }}
-          >
-            <option value="">Select a class</option>
-            {classes.map((classroom) => <option key={classroom.id} value={classroom.id}>{classroom.name}</option>)}
-          </TextField>
+          <FormControl fullWidth>
+            <FormLabel sx={{ mb: 1, color: "text.primary", fontWeight: 500 }}>Class</FormLabel>
+            <TextField
+              select
+              fullWidth
+              value={selectedClassId}
+              onChange={(event) => setSelectedClassId(event.target.value)}
+              slotProps={{ select: { native: true } }}
+            >
+              <option value="">Select a class</option>
+              {classes.map((classroom) => <option key={classroom.id} value={classroom.id}>{classroom.name}</option>)}
+            </TextField>
+          </FormControl>
+        </Paper>
+        <Paper sx={{ p: 3, mb: 3 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>Post-Submission Comprehension Check</Typography>
+          <FormControlLabel
+            control={<Switch checked={comprehensionCheck.enabled} onChange={(event) => setComprehensionCheck((current) => ({ ...current, enabled: event.target.checked }))} />}
+            label={comprehensionCheck.enabled ? "Enabled" : "Disabled"}
+            sx={{ mb: comprehensionCheck.enabled ? 2 : 0 }}
+          />
+          {comprehensionCheck.enabled && (
+            <Box sx={{ display: "grid", gap: 2 }}>
+              <TextField
+                type="number"
+                label="Time limit (minutes)"
+                value={comprehensionCheck.timeLimitMinutes}
+                onChange={(event) => setComprehensionCheck((current) => ({
+                  ...current,
+                  timeLimitMinutes: Math.max(1, Math.min(MAX_COMPREHENSION_TIME_LIMIT_MINUTES, Number(event.target.value) || 1))
+                }))}
+                slotProps={{ htmlInput: { min: 1, max: 10 } }}
+                sx={{ maxWidth: 220 }}
+              />
+              {comprehensionCheck.questions.map((question, index) => (
+                <TextField
+                  key={`question-${index}`}
+                  label={`Question ${index + 1}`}
+                  value={question}
+                  onChange={(event) => setComprehensionCheck((current) => ({
+                    ...current,
+                    questions: current.questions.map((item, itemIndex) => itemIndex === index ? event.target.value : item)
+                  }))}
+                />
+              ))}
+            </Box>
+          )}
         </Paper>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, gap: 3 }}>
           {templates.map(([title, prompt]) => (
@@ -1993,17 +2448,304 @@ function FullPageMessage({ title, detail, action }: { title: string; detail: str
   );
 }
 
-function FlagChip({ flag, label }: { flag: "red" | "yellow" | "green"; label: string }) {
-  return <Chip icon={<Flag />} label={label} size="small" sx={{ bgcolor: flagColor(flag), color: "white" }} />;
+function AssessmentChip({ label }: { label: ProfessorReportResponse["authorCheck"]["assessmentLabel"] }) {
+  return <Chip icon={<Flag />} label={label} size="small" sx={{ bgcolor: assessmentColor(label), color: "white" }} />;
 }
 
-function ProcessIndicatorBar({ value }: { value: number }) {
+function ProcessIndicatorBar({ value, tone }: { value: number; tone: "support" | "atypicality" }) {
+  const color = tone === "support" ? "#2e7d32" : value >= 70 ? "#d32f2f" : value >= 40 ? "#f57c00" : "#607d8b";
   return (
     <Box sx={{ minWidth: 120 }}>
       <Typography variant="body2">{value}%</Typography>
-      <LinearProgress variant="determinate" value={value} sx={{ height: 6, borderRadius: 3, "& .MuiLinearProgress-bar": { bgcolor: value > 60 ? "#d32f2f" : value >= 30 ? "#f57c00" : "#2e7d32" } }} />
+      <LinearProgress variant="determinate" value={value} sx={{ height: 6, borderRadius: 3, "& .MuiLinearProgress-bar": { bgcolor: color } }} />
     </Box>
   );
+}
+
+function ScoreCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, bgcolor: "rgba(255,255,255,0.72)" }}>
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", mb: 1 }}>
+        <Typography variant="subtitle2">{label}</Typography>
+        <Typography variant="h5" sx={{ color }}>{value}%</Typography>
+      </Box>
+      <LinearProgress variant="determinate" value={value} sx={{ height: 8, borderRadius: 4, "& .MuiLinearProgress-bar": { bgcolor: color } }} />
+    </Paper>
+  );
+}
+
+const supportDimensionDefinitions = [
+  { key: "compositionPlausibility", label: "Composition plausibility", max: 20 },
+  { key: "revisionDepth", label: "Revision depth", max: 20 },
+  { key: "pasteIntegration", label: "Paste integration", max: 20 },
+  { key: "sessionDevelopment", label: "Session development", max: 15 },
+  { key: "comprehensionAlignment", label: "Comprehension alignment", max: 20 },
+  { key: "sourceProcess", label: "Source process", max: 5 }
+] as const;
+
+const atypicalityDimensionDefinitions = [
+  { key: "highVelocityInsertion", label: "High-velocity insertion", max: 25 },
+  { key: "unrevisedPasteDependence", label: "Unrevised paste dependence", max: 30 },
+  { key: "minimalRevisionPattern", label: "Minimal revision pattern", max: 15 },
+  { key: "shortCompletionPattern", label: "Short completion pattern", max: 15 },
+  { key: "weakComprehensionSignal", label: "Weak comprehension signal", max: 15 }
+] as const;
+
+function DimensionScoreRow({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  return (
+    <Box sx={{ mb: 1.5 }}>
+      <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, mb: 0.5 }}>
+        <Typography variant="body2">{label}</Typography>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>{value}/{max}</Typography>
+      </Box>
+      <LinearProgress
+        variant="determinate"
+        value={max ? Math.min(100, (value / max) * 100) : 0}
+        sx={{ height: 6, borderRadius: 3, "& .MuiLinearProgress-bar": { bgcolor: color } }}
+      />
+    </Box>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>{value}</Typography>
+    </Box>
+  );
+}
+
+function formatMetricDuration(value: number | null) {
+  if (value === null) return "Not available";
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1000);
+  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function formatReplayFrameTime(at: number) {
+  return new Date(at).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function replayDelayMs(actualDelayMs: number, speed: 1 | 2 | 4) {
+  const scaled = actualDelayMs / speed;
+  return Math.max(120, Math.min(12_000, scaled || 120));
+}
+
+function WritingRichTextEditor({
+  value,
+  disabled,
+  onChange
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (nextHtml: string, nextPlainText: string, inputType: string) => void;
+}) {
+  const quillRef = useRef<any>(null);
+  const [fontValue, setFontValue] = useState("arial");
+  const [sizeValue, setSizeValue] = useState("16px");
+
+  const toolbarControlSx = {
+    minWidth: 132,
+    "& .MuiOutlinedInput-root": {
+      bgcolor: "#fff",
+      borderRadius: 1.5,
+      height: 40
+    },
+    "& .MuiSelect-select": {
+      alignItems: "center",
+      display: "flex",
+      fontSize: 14,
+      py: 1.1
+    }
+  };
+
+  const modules = useMemo(() => ({
+    toolbar: false,
+    history: {
+      delay: 400,
+      maxStack: 100,
+      userOnly: true
+    }
+  }), []);
+
+  const formats = useMemo(() => [
+    "font",
+    "size",
+    "bold",
+    "italic",
+    "underline",
+    "list",
+    "align"
+  ], []);
+
+  const syncToolbarState = useCallback(() => {
+    const editor = quillRef.current?.getEditor?.();
+    if (!editor) return;
+    const current = editor.getFormat();
+    setFontValue(typeof current.font === "string" ? current.font : "arial");
+    setSizeValue(typeof current.size === "string" ? current.size : "16px");
+  }, []);
+
+  useEffect(() => {
+    const editor = quillRef.current?.getEditor?.();
+    if (!editor) return;
+    syncToolbarState();
+    editor.on("selection-change", syncToolbarState);
+    editor.on("text-change", syncToolbarState);
+    return () => {
+      editor.off("selection-change", syncToolbarState);
+      editor.off("text-change", syncToolbarState);
+    };
+  }, [syncToolbarState, value]);
+
+  function withEditor(action: (editor: any) => void) {
+    const editor = quillRef.current?.getEditor?.();
+    if (!editor || disabled) return;
+    action(editor);
+    syncToolbarState();
+  }
+
+  function toggleInline(formatName: "bold" | "italic" | "underline") {
+    withEditor((editor) => {
+      const current = editor.getFormat();
+      editor.format(formatName, !current[formatName]);
+    });
+  }
+
+  function toggleList(type: "bullet" | "ordered") {
+    withEditor((editor) => {
+      const current = editor.getFormat();
+      editor.format("list", current.list === type ? false : type);
+    });
+  }
+
+  function setAlignment(alignment: "" | "center" | "right") {
+    withEditor((editor) => {
+      editor.format("align", alignment || false);
+    });
+  }
+
+  return (
+    <Box sx={{ border: "1px solid #d0d7de", borderRadius: 2, overflow: "hidden", mb: 3, bgcolor: "white" }}>
+      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center", p: 1.5, bgcolor: "#f7f9fc", borderBottom: "1px solid #e5e7eb" }}>
+        <FormControl size="small" sx={toolbarControlSx}>
+          <Select
+            value={fontValue}
+            disabled={disabled}
+            displayEmpty
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setFontValue(nextValue);
+              withEditor((editor) => editor.format("font", nextValue));
+            }}
+          >
+            <MenuItem value="arial">Arial</MenuItem>
+            <MenuItem value="times-new-roman">Times New Roman</MenuItem>
+            <MenuItem value="verdana">Verdana</MenuItem>
+            <MenuItem value="georgia">Georgia</MenuItem>
+            <MenuItem value="courier-new">Courier New</MenuItem>
+            <MenuItem value="sans-serif">Sans Serif</MenuItem>
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ ...toolbarControlSx, minWidth: 92 }}>
+          <Select
+            value={sizeValue}
+            disabled={disabled}
+            displayEmpty
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setSizeValue(nextValue);
+              withEditor((editor) => editor.format("size", nextValue));
+            }}
+          >
+            <MenuItem value="12px">12</MenuItem>
+            <MenuItem value="14px">14</MenuItem>
+            <MenuItem value="16px">16</MenuItem>
+            <MenuItem value="18px">18</MenuItem>
+            <MenuItem value="24px">24</MenuItem>
+            <MenuItem value="36px">36</MenuItem>
+          </Select>
+        </FormControl>
+        <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+        <IconButton size="small" onClick={() => toggleInline("bold")} title="Bold" disabled={disabled}><FormatBold /></IconButton>
+        <IconButton size="small" onClick={() => toggleInline("italic")} title="Italic" disabled={disabled}><FormatItalic /></IconButton>
+        <IconButton size="small" onClick={() => toggleInline("underline")} title="Underline" disabled={disabled}><FormatUnderlined /></IconButton>
+        <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+        <IconButton size="small" onClick={() => toggleList("bullet")} title="Bullet List" disabled={disabled}><FormatListBulleted /></IconButton>
+        <IconButton size="small" onClick={() => toggleList("ordered")} title="Numbered List" disabled={disabled}><FormatListNumbered /></IconButton>
+        <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+        <IconButton size="small" onClick={() => setAlignment("")} title="Align Left" disabled={disabled}><FormatAlignLeft /></IconButton>
+        <IconButton size="small" onClick={() => setAlignment("center")} title="Align Center" disabled={disabled}><FormatAlignCenter /></IconButton>
+        <IconButton size="small" onClick={() => setAlignment("right")} title="Align Right" disabled={disabled}><FormatAlignRight /></IconButton>
+      </Box>
+      <Box className="draftproof-editor">
+        <ReactQuill
+          ref={quillRef}
+          theme="snow"
+          modules={modules}
+          formats={formats}
+          value={value}
+          readOnly={disabled}
+          onChange={(nextHtml: string, delta: { ops?: Array<{ insert?: unknown; delete?: number }> }, source: string, editor: { getText(): string }) => {
+            const plainText = normalizeQuillText(editor.getText());
+            const inputType = deriveQuillInputType(delta, source);
+            onChange(nextHtml, plainText, inputType);
+          }}
+        />
+      </Box>
+    </Box>
+  );
+}
+
+function deriveQuillInputType(delta: { ops?: Array<{ insert?: unknown; delete?: number }> }, source: string) {
+  if (source !== "user") return "sync";
+  const ops = delta.ops || [];
+  const insertedText = ops
+    .filter((op) => typeof op.insert === "string")
+    .map((op) => String(op.insert))
+    .join("");
+  if (countWords(insertedText) >= 20) return "insertFromPaste";
+  if (ops.some((op) => typeof op.delete === "number" && op.delete > 0)) return "deleteContentBackward";
+  return "insertText";
+}
+
+function normalizeQuillText(text: string) {
+  return text.replace(/\u00a0/g, " ").replace(/\n$/, "");
+}
+
+function plainTextToEditorHtml(text: string) {
+  if (!text.trim()) return "<p><br></p>";
+  return text
+    .split("\n")
+    .map((line) => line.trim() ? `<p>${escapeHtml(line)}</p>` : "<p><br></p>")
+    .join("");
+}
+
+function editorHtmlToPlainText(html: string) {
+  if (!html) return "";
+  if (typeof window === "undefined") {
+    return html
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\u00a0/g, " ")
+      .trim();
+  }
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  return normalizeQuillText(container.innerText);
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function loadJson<T>(path: string): Promise<T> {
@@ -2032,10 +2774,18 @@ function statusLabel(status: string) {
   return status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function flagColor(flag: "red" | "yellow" | "green") {
-  if (flag === "red") return "#d32f2f";
-  if (flag === "yellow") return "#f57c00";
-  return "#2e7d32";
+function assessmentColor(label: ProfessorReportResponse["authorCheck"]["assessmentLabel"]) {
+  if (label === "Review Recommended") return "#b45309";
+  if (label === "Strong Process Evidence") return "#2e7d32";
+  if (label === "Mixed Process Evidence") return "#1976d2";
+  return "#64748b";
+}
+
+function assessmentBackground(label: ProfessorReportResponse["authorCheck"]["assessmentLabel"]) {
+  if (label === "Review Recommended") return "#fff7ed";
+  if (label === "Strong Process Evidence") return "#e8f5e9";
+  if (label === "Mixed Process Evidence") return "#e3f2fd";
+  return "#f1f5f9";
 }
 
 function classColor(index: number) {

@@ -39,6 +39,8 @@ export type SessionMetrics = {
   lastEventAt: number | null;
 };
 
+const REPORTABLE_DELETION_CHARACTERS = 50;
+
 export function getDiff(previous: string, next: string) {
   let start = 0;
   while (start < previous.length && start < next.length && previous[start] === next[start]) {
@@ -141,17 +143,19 @@ export function analyzeProcess(events: WritingEvent[], submittedText: string): O
 
   if (finalWords >= 150 && deleteEvents.length === 0) {
     observations.push({
-      group: "Major Event",
-      title: "No revision activity",
-      detail: "No deletions or text-removal revisions were recorded before submission."
+      group: "Context Event",
+      title: "No text-removal events recorded",
+      detail: "No deletion or text-removal events were recorded; this is inconclusive without other process indicators."
     });
   }
 
   deletionEvents.forEach((event) => {
+    const removedCharacters = event.removedCharacters || event.removed?.length || 0;
+    if (removedCharacters < REPORTABLE_DELETION_CHARACTERS) return;
     observations.push({
       group: "Context Event",
       title: "Deletion event",
-      detail: `${event.removedCharacters || 0} characters were deleted at ${new Date(event.at).toLocaleTimeString()}.`
+      detail: `${removedCharacters} characters were deleted at ${new Date(event.at).toLocaleTimeString()}.`
     });
   });
 

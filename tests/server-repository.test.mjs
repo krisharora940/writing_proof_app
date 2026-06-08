@@ -106,11 +106,13 @@ test("storeTimedSummary only stores once after submission", () => {
     studentId: DEMO_STUDENT_ID,
     startedAt: 1300,
     completedAt: 1400,
-    summaryText: "Summary"
+    summaryText: "Answer only",
+    responses: [{ question: "What was your claim?", answer: "Answer only" }]
   });
 
   assert.equal(result.ok, true);
-  assert.equal(state.timedSummary?.summaryText, "Summary");
+  assert.equal(state.timedSummary?.summaryText, "Answer only");
+  assert.deepEqual(state.timedSummary?.responses, [{ question: "What was your claim?", answer: "Answer only" }]);
 
   const secondResult = storeTimedSummary(state, {
     sessionId: DEMO_SESSION_ID,
@@ -174,7 +176,11 @@ test("getProfessorReportDemo returns report data for the owning professor", () =
   assert.equal(result.ok, true);
   assert.equal(result.value.submittedText, "Process evidence supports revision");
   assert.ok(result.value.observations.some((item) => item.group === "Comprehension Check"));
-  assert.ok(result.value.tags.some((item) => item.category === "Report Observation"));
+  assert.ok(result.value.tags.some((item) => item.category === "Process Development"));
+  assert.equal(result.value.processFeatures.finalWords, 4);
+  assert.equal(result.value.processFeatures.draftBuildCurve.at(-1).words, 4);
+  assert.equal(result.value.comprehensionFeatures.summaryLatencyMs, 100);
+  assert.equal(result.value.comprehensionFeatures.summarySubmitted, true);
   assert.equal(result.value.frames.length, 2);
 });
 
